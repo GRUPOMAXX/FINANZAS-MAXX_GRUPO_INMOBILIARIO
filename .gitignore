@@ -1,0 +1,4 @@
+.env                 # No se sube
+.env.*               # No se sube
+!.env.example        # Si se sube
+

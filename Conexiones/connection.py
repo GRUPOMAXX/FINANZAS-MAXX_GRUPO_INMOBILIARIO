@@ -6,11 +6,58 @@ from datetime import datetime
 base_dir = os.getcwd()
 timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 
-#MODELO DE FINANZAS
-# Parámetros a modificar
 
-finanzas_anlo_modelo = '2025'  
-finanzas_mes_modelo = '08'  
+# =====================================================================================================
+#                                       PARAMETROS A MODIFICAR
+# =====================================================================================================
+
+
+# ============================================ COBRANZAS ==============================================
+
+# Proyectos Vigentes
+
+PROYECTOS_VIGENTES_COBRANZAS = ["Prada", "Beyond", "Venecia"]    # Colocar los proyectos vigentes.
+
+# Inicio de Reporte
+
+FECHA_INICIO_REPORTE = "01/01/2024"  # Fecha de Inicio del reporte. 
+
+# Fecha de cierre mensual
+
+FECHA_CORTE_REPORTE = "30/06/2026"   # Fecha de corte para el reporte.
+
+
+PROYECTO = {
+    "RESIDENCIAL PRADA": "Prada",
+    "RESIDENCIAL BEYOND": "Beyond",
+    "RESIDENCIAL VENECIA": "Venecia",
+}
+
+
+
+# ======================================================================================================
+#                                             ¡NO TOCAR!
+# ======================================================================================================
+
+
+# Función fin de reporte
+def sumar_anios_fecha(fecha_texto, anios):
+    fecha = datetime.strptime(fecha_texto, "%d/%m/%Y")
+    fecha_final = fecha.replace(year=fecha.year + anios)
+    return fecha_final.strftime("%d/%m/%Y")
+
+
+# Fecha fin
+FECHA_FIN_REPORTE = sumar_anios_fecha(FECHA_CORTE_REPORTE, 5)
+
+
+# Función año del reporte
+def obtener_anio_mensual_reporte(fecha_corte_texto):
+    fecha_corte = datetime.strptime(fecha_corte_texto, "%d/%m/%Y")
+    return fecha_corte.year
+
+# Año del reporte
+ANIO_MENSUAL_REPORTE = obtener_anio_mensual_reporte(FECHA_CORTE_REPORTE)   # Año del reporte mensualizado.
 
 
 # Tipo de Cambio SUNAT
