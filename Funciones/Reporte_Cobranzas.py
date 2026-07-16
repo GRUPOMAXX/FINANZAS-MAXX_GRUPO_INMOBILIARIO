@@ -1,12 +1,28 @@
+# Programa para descargar la base de datos de cobranzas en Evolta
+
+# Creado por Eduardo Miguel Huamani Acosta                            15/07/26
+
+
+# Este automatización trata de elaborar un reporte de cobranzas por proyecto. Al momento de elaborar el reporte se tendría que
+# formular cada proyecto en una hoja, revisar que la información esté hasta el cierre de mes, demandando horas de trabajo.
+
+# Este código permite extraer información de las cobranzas y elabora un reporte en base al cierre de mes, si en caso se
+# encuentra alguna cobranza o venta, solo se tomará hasta el cierre de mes. Este reporte de lo que se hacía en 2 - 3 horas, 
+# con el codigo se podrá tener el reporte completo en 2 - 3 minutos.
+
+# =============================================================================================================================
+
+# LIBRERIAS 
+
 import sys
 import re
 import unicodedata
 from pathlib import Path
 from copy import copy
 
-import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
+import pandas as pd                                  
+from openpyxl import load_workbook                  
+from openpyxl.utils import get_column_letter        
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.styles import PatternFill
 
@@ -16,9 +32,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.append(str(BASE_DIR))
 
-from Conexiones.connection import (FECHA_INICIO_REPORTE, FECHA_FIN_REPORTE,
-    FECHA_CORTE_REPORTE, ANIO_MENSUAL_REPORTE, PROYECTO,
-)
+from Conexiones.connection import ( FECHA_CORTE_REPORTE, ANIO_MENSUAL_REPORTE, PROYECTO,)
 
 try:
     from Conexiones.connection import PROYECTOS_VIGENTES_COBRANZAS  # noqa: E402
@@ -34,16 +48,13 @@ import Descarga_Cobranzas as descarga  # noqa: E402
 
 EJECUTAR_DESCARGA = True
 
-ENTRADA_LISTA_PRECIOS = BASE_DIR / "Flujo" / "Input" / "Cobranzas"
 SALIDA_LISTA = BASE_DIR / "Flujo" / "Output"
 
 NOMBRE_HOJA_PLANTILLA = "Prada"
 NOMBRE_HOJA_BASE = "Base_Cobranzas"
 NOMBRE_REPORTE_COBRANZAS = "Reporte_Cobranzas.xlsx"
-NOMBRE_BASE_CONSOLIDADA = "Base_Cobranzas_Consolidada.xlsx"
 NOMBRE_BASE_AJUSTADA = "Base_Cobranzas_Ajustado.xlsx"
 NOMBRE_HOJA_BASE_AJUSTADA = "Base_Ajustada"
-NOMBRE_HOJA_BASE_ORIGINAL_AJUSTADA = "Base_Original"
 
 RUTAS_PLANTILLA_REPORTE = [
     BASE_DIR / "Flujo" / "Input" / "Plantillas" / "Plantilla de reporte.xlsx"
@@ -92,17 +103,11 @@ COLUMNAS_OBLIGATORIAS_REPORTE = [
 # 2. FUNCIONES GENERALES
 # =========================================================
 
+# Ejecuta el script Descargas_Cobranzas
 def ejecutar_descarga_cobranzas():
-    """
-    Ejecuta Descarga_Cobranzas.py.
-
-    Importante:
-    Descarga_Cobranzas.py debe generar:
-    Flujo / Output / Base_Cobranzas_Consolidada.xlsx
-    """
     descarga.main()
 
-
+# Limpia el texto para que se pueda comparar
 def normalizar_texto(texto):
     texto = str(texto).strip().upper()
     texto = unicodedata.normalize("NFKD", texto)
@@ -112,7 +117,7 @@ def normalizar_texto(texto):
     )
     return texto
 
-
+# Cambia el nombre largo por el estandar
 def obtener_nombre_proyecto(proyecto):
     proyecto_normalizado = normalizar_texto(proyecto)
 
@@ -122,7 +127,7 @@ def obtener_nombre_proyecto(proyecto):
 
     return str(proyecto).strip()
 
-
+# Limpia la columna que esta en letra y lo convierte en numero
 def convertir_columna_numero(serie):
     serie = serie.astype(str).str.strip()
     serie = serie.str.replace("S/", "", regex=False)
@@ -133,7 +138,7 @@ def convertir_columna_numero(serie):
     serie = serie.replace("", pd.NA)
     return pd.to_numeric(serie, errors="coerce")
 
-
+#  Identifica que columna se debe de tratarse como numero
 def es_columna_numero(columna):
     if columna in COLUMNAS_NUMERO_FIJAS:
         return True
@@ -144,7 +149,7 @@ def es_columna_numero(columna):
 
     return False
 
-
+# Convierte fechas y montos a los formatos correctos
 def convertir_tipos_base(base):
     base = base.copy()
 
@@ -162,7 +167,7 @@ def convertir_tipos_base(base):
 
     return base
 
-
+# Ajusta el nombre del proyecto para que entre como nombre en las hojas de Excel
 def nombre_hoja_valido(nombre):
     nombre = str(nombre).strip()
     nombre = re.sub(r"[\[\]\*\?/\\:]", "-", nombre)
@@ -174,6 +179,7 @@ def nombre_hoja_valido(nombre):
 # 3. FECHA DE CORTE
 # =========================================================
 
+# Lee la fecha de corte del script Connection
 def obtener_fecha_corte_reporte():
     if FECHA_CORTE_REPORTE is None or str(FECHA_CORTE_REPORTE).strip() == "":
         return None
@@ -192,7 +198,7 @@ def obtener_fecha_corte_reporte():
 
     return fecha_corte
 
-
+# Calcula el primer día del mes siguiente al corte
 def obtener_inicio_mes_siguiente_corte():
     fecha_corte = obtener_fecha_corte_reporte()
 
@@ -207,7 +213,7 @@ def obtener_inicio_mes_siguiente_corte():
 
     return inicio_mes_corte + pd.DateOffset(months=1)
 
-
+# Devuelve el mes siguiente y el mes posterior, esto se utiliza para manejar rangos mensuales
 def obtener_rango_mes_siguiente_corte():
     inicio_mes_siguiente = obtener_inicio_mes_siguiente_corte()
 
@@ -218,17 +224,11 @@ def obtener_rango_mes_siguiente_corte():
     return inicio_mes_siguiente, inicio_mes_posterior
 
 
-# Nota:
-# El ajuste por fecha de cierre ya se realiza en Descarga_Cobranzas.py
-# al generar Base_Cobranzas_Ajustado.xlsx.
-# Este reporte NO vuelve a modificar Estado, FechaPago, Monto_Cuota_Pagado
-# ni SaldoPorPagarCuota.
-
-
 # =========================================================
 # 4. CARGA DE BASE Y PLANTILLA
 # =========================================================
 
+# Busca la plantilla que se habia colocado en la carpeta Plantillas
 def buscar_plantilla_reporte():
     for ruta in RUTAS_PLANTILLA_REPORTE:
         if ruta.exists():
@@ -241,17 +241,10 @@ def buscar_plantilla_reporte():
         f"- {ruta}"
     )
 
-
-
+# Carga la base de datos que se había adaptado con corte al cierre de mes
 def cargar_base_consolidada():
     """
     Carga únicamente la base ajustada que usará el reporte.
-
-    Archivo esperado:
-        Flujo/Output/Base_Cobranzas_Ajustado.xlsx
-
-    Hoja esperada:
-        Base_Ajustada
 
     Importante:
     El ajuste de fecha de cierre, estados y saldos negativos ya debe venir
@@ -283,13 +276,9 @@ def cargar_base_consolidada():
 
     base = convertir_tipos_base(base)
 
-    print("✅ Se usará la base ajustada sin modificar fecha ni estado:")
-    print(ruta_ajustada.resolve())
-    print(f"   Hoja: {NOMBRE_HOJA_BASE_AJUSTADA}")
-
     return base, ruta_ajustada
 
-
+# Verifica que la base de datos tenga las columna minimas para generar el reporte
 def validar_columnas_reporte(base):
     faltantes = [col for col in COLUMNAS_OBLIGATORIAS_REPORTE if col not in base.columns]
 
@@ -308,7 +297,7 @@ def validar_columnas_reporte(base):
     if not columnas_nro:
         print("⚠️ No se encontraron columnas NroInmueble_N. Las unidades se calcularán con limitaciones.")
 
-
+# Identifica que proyectos debe de tener como nombre en la hoja de Excel
 def obtener_proyectos_reporte(base):
     if "Proyecto" not in base.columns:
         raise ValueError("No existe la columna Proyecto en la base consolidada.")
@@ -354,6 +343,7 @@ def obtener_proyectos_reporte(base):
 # 5. PERIODOS DINÁMICOS
 # =========================================================
 
+# Convierte cualquier fecha al primer dia de su mes
 def primer_dia_mes(fecha):
     fecha = pd.to_datetime(fecha, errors="coerce")
 
@@ -362,7 +352,7 @@ def primer_dia_mes(fecha):
 
     return pd.Timestamp(year=fecha.year, month=fecha.month, day=1)
 
-
+# Genera una lista mensual entre dos fechas
 def lista_meses(fecha_inicio, fecha_fin):
     fecha_inicio = primer_dia_mes(fecha_inicio)
     fecha_fin = primer_dia_mes(fecha_fin)
@@ -379,7 +369,7 @@ def lista_meses(fecha_inicio, fecha_fin):
 
     return meses
 
-
+# Construye los años acumulados de la cobranza pasada
 def construir_periodos_por_anio_reporte(fecha_inicio, fecha_fin):
     fecha_inicio = pd.to_datetime(fecha_inicio, errors="coerce")
     fecha_fin = pd.to_datetime(fecha_fin, errors="coerce")
@@ -405,7 +395,7 @@ def construir_periodos_por_anio_reporte(fecha_inicio, fecha_fin):
 
     return periodos
 
-
+# Construye periodos mensuales en el año del cierre de mes 
 def construir_periodos_solo_mensual(fecha_inicio, fecha_fin):
     fecha_inicio = pd.to_datetime(fecha_inicio, errors="coerce")
     fecha_fin = pd.to_datetime(fecha_fin, errors="coerce")
@@ -418,13 +408,16 @@ def construir_periodos_solo_mensual(fecha_inicio, fecha_fin):
         for mes in lista_meses(fecha_inicio, fecha_fin)
     ]
 
-
+#  Calcula los periodos que tendrá cada bloque del proyecto: real, proyectado y moroso
 def obtener_periodos_proyecto(base, proyecto):
     base_temp = base.copy()
     base_temp["Proyecto_Corto"] = base_temp["Proyecto"].apply(obtener_nombre_proyecto)
     base_proyecto = base_temp[base_temp["Proyecto_Corto"] == proyecto].copy()
 
     estado = base_proyecto["Estado"].astype(str).apply(normalizar_texto)
+    estado_pendiente = estado.str.contains("PENDIENTE", na=False)
+    estado_vencido = estado.str.contains("VENCIDO", na=False)
+
     fecha_corte = obtener_fecha_corte_reporte()
     inicio_mes_siguiente = obtener_inicio_mes_siguiente_corte()
 
@@ -435,26 +428,30 @@ def obtener_periodos_proyecto(base, proyecto):
 
     if inicio_mes_siguiente is not None:
         base_proyectada = base_proyecto[
-            (estado == "PENDIENTE")
+            estado_pendiente
             & (base_proyecto["Fecha_Programada"].notna())
             & (base_proyecto["Fecha_Programada"] >= inicio_mes_siguiente)
+            & (base_proyecto["SaldoPorPagarCuota"].fillna(0) > 0)
         ]
     else:
         base_proyectada = base_proyecto[
-            (estado == "PENDIENTE")
+            estado_pendiente
             & (base_proyecto["Fecha_Programada"].notna())
+            & (base_proyecto["SaldoPorPagarCuota"].fillna(0) > 0)
         ]
 
     if fecha_corte is not None:
         base_morosa = base_proyecto[
-            (estado == "VENCIDO")
+            estado_vencido
             & (base_proyecto["Fecha_Programada"].notna())
             & (base_proyecto["Fecha_Programada"] <= fecha_corte)
+            & (base_proyecto["SaldoPorPagarCuota"].fillna(0) > 0)
         ]
     else:
         base_morosa = base_proyecto[
-            (estado == "VENCIDO")
+            estado_vencido
             & (base_proyecto["Fecha_Programada"].notna())
+            & (base_proyecto["SaldoPorPagarCuota"].fillna(0) > 0)
         ]
 
     if not base_real.empty:
@@ -466,7 +463,12 @@ def obtener_periodos_proyecto(base, proyecto):
         periodos_real = []
 
     if not base_proyectada.empty:
-        fecha_inicio_proy = inicio_mes_siguiente if inicio_mes_siguiente is not None else base_proyectada["Fecha_Programada"].min()
+        fecha_inicio_proy = (
+            inicio_mes_siguiente
+            if inicio_mes_siguiente is not None
+            else base_proyectada["Fecha_Programada"].min()
+        )
+
         periodos_proy = construir_periodos_solo_mensual(
             fecha_inicio_proy,
             base_proyectada["Fecha_Programada"].max(),
@@ -475,7 +477,12 @@ def obtener_periodos_proyecto(base, proyecto):
         periodos_proy = []
 
     if not base_morosa.empty:
-        fecha_fin_morosa = fecha_corte if fecha_corte is not None else base_morosa["Fecha_Programada"].max()
+        fecha_fin_morosa = (
+            fecha_corte
+            if fecha_corte is not None
+            else base_morosa["Fecha_Programada"].max()
+        )
+
         periodos_morosa = construir_periodos_solo_mensual(
             base_morosa["Fecha_Programada"].min(),
             fecha_fin_morosa,
@@ -490,6 +497,7 @@ def obtener_periodos_proyecto(base, proyecto):
 # 6. ESTILOS EXCEL
 # =========================================================
 
+# Copia formato de una celda a otra
 def copiar_estilo(origen, destino):
     if origen.has_style:
         destino._style = copy(origen._style)
@@ -506,7 +514,7 @@ def copiar_estilo(origen, destino):
     if origen.protection:
         destino.protection = copy(origen.protection)
 
-
+# Copia el ancho de una columna a otra
 def copiar_estilo_columna(ws, col_origen, col_destino):
     letra_origen = get_column_letter(col_origen)
     letra_destino = get_column_letter(col_destino)
@@ -514,7 +522,7 @@ def copiar_estilo_columna(ws, col_origen, col_destino):
     if ws.column_dimensions[letra_origen].width:
         ws.column_dimensions[letra_destino].width = ws.column_dimensions[letra_origen].width
 
-
+# Busca una fila donde el texto sea exactamente igual
 def buscar_fila_por_texto(ws, texto, col=2, fila_inicio=1, fila_fin=None):
     objetivo = normalizar_texto(texto)
     fila_fin = fila_fin or ws.max_row
@@ -526,7 +534,7 @@ def buscar_fila_por_texto(ws, texto, col=2, fila_inicio=1, fila_fin=None):
 
     return None
 
-
+# Busca una fila que contenga cierto texto
 def buscar_fila_contiene_texto(ws, texto, col=2, fila_inicio=1, fila_fin=None):
     objetivo = normalizar_texto(texto)
     fila_fin = fila_fin or ws.max_row
@@ -538,27 +546,27 @@ def buscar_fila_contiene_texto(ws, texto, col=2, fila_inicio=1, fila_fin=None):
 
     return None
 
-
+# Busca donde esta la columna Total dentro de los cuadros
 def buscar_columna_total(ws, fila_encabezado, col_inicio=3):
     for col in range(col_inicio, ws.max_column + 1):
         if normalizar_texto(ws.cell(row=fila_encabezado, column=col).value) == "TOTAL":
             return col
     return None
 
-
+# Aplica formato del monto
 def aplicar_formato_monto(celda):
     celda.number_format = FORMATO_MONTO_REPORTE
 
-
+# Aplica formato de porcentaje
 def aplicar_formato_porcentaje(celda):
     celda.number_format = FORMATO_PORCENTAJE_REPORTE
 
-
+# Quita el fondo de una celda
 def quitar_relleno(celda):
     """Deja la celda sin color de fondo."""
     celda.fill = PatternFill(fill_type=None)
 
-
+# Aplica el formato final de cada bloque
 def aplicar_estilo_final_bloque(
     ws,
     titulo_bloque,
@@ -568,16 +576,7 @@ def aplicar_estilo_final_bloque(
     filas_credito,
     fila_acumulado,
 ):
-    """
-    Ajusta el diseño final del bloque de cobranzas.
-
-    Reglas:
-    - La columna Total mantiene el estilo de la plantilla.
-    - Las filas de crédito debajo de Total van en #F2F2F2.
-    - La fila Total va en #D0D0D0 hasta la columna Total.
-    - El validador se escribe al costado de Total, sin colorear esa celda.
-    - La fila Acumulado solo se colorea hasta el último periodo, no en Total.
-    """
+    
     fill_detalle = PatternFill(fill_type="solid", fgColor=COLOR_TOTAL_DETALLE)
     fill_total = PatternFill(fill_type="solid", fgColor=COLOR_TOTAL_FILA)
 
@@ -630,6 +629,7 @@ def aplicar_estilo_final_bloque(
 # 7. ESCRIBIR BASE OCULTA
 # =========================================================
 
+# Crea la hoja, pega la base de datos y la oculta
 def escribir_base_en_reporte(wb, base):
     if NOMBRE_HOJA_BASE in wb.sheetnames:
         wb.remove(wb[NOMBRE_HOJA_BASE])
@@ -666,18 +666,19 @@ def escribir_base_en_reporte(wb, base):
 # 8. FÓRMULAS DE EXCEL
 # =========================================================
 
+# Detecta las columnas tipo_inmueble
 def mapa_columnas_excel(base):
     return {
         columna: get_column_letter(indice + 1)
         for indice, columna in enumerate(base.columns)
     }
 
-
+# Arma una part de formula para detectar si una fila tiene departamento, estacionamiento, deposito o local
 def rango_base(columna, columnas_excel, max_fila):
     letra = columnas_excel[columna]
     return f"'{NOMBRE_HOJA_BASE}'!${letra}$2:${letra}${max_fila}"
 
-
+# Arma la formula para identificar el tipo de financiamiento
 def formula_palabra_financiamiento(celda_tipo):
     return (
         f'IF(ISNUMBER(SEARCH("DIRECTO",UPPER({celda_tipo}))),"DIRECTO",'
@@ -685,7 +686,7 @@ def formula_palabra_financiamiento(celda_tipo):
         f'IF(ISNUMBER(SEARCH("AHORRO",UPPER({celda_tipo}))),"AHORRO",UPPER({celda_tipo}))))'
     )
 
-
+# Arma la condición del estado: Pendiente, Cancelado y Vencido
 def condicion_estado(tipo_estado, rng_estado):
     tipo_estado = normalizar_texto(tipo_estado)
 
@@ -700,7 +701,7 @@ def condicion_estado(tipo_estado, rng_estado):
 
     return "1"
 
-
+# Arma la formula de las cobranzas por periodo
 def formula_periodo_cobranza(
     celda_proyecto,
     celda_tipo_credito,
@@ -745,6 +746,7 @@ def formula_periodo_cobranza(
 # 9. CLASIFICACIÓN DE INMUEBLES PARA FÓRMULAS
 # =========================================================
 
+# Detecta la columna TipoInmueble
 def obtener_columnas_tipo_inmueble(columnas_excel):
     columnas_tipo = []
 
@@ -759,7 +761,7 @@ def obtener_columnas_tipo_inmueble(columnas_excel):
 
     return columnas_tipo
 
-
+# Arma una parte de la formula para detectar si una fila tiene departamento, estacionamiento, deposito o local
 def formula_suma_busqueda_tipo(columnas_tipo, columnas_excel, max_fila, palabra):
     partes = []
 
@@ -772,7 +774,7 @@ def formula_suma_busqueda_tipo(columnas_tipo, columnas_excel, max_fila, palabra)
 
     return "(" + "+".join(partes) + ")"
 
-
+# Arma la formula para calcular montos por tipo de inmueble
 def formula_tipo_inmueble(
     celda_proyecto,
     columna_monto,
@@ -847,6 +849,7 @@ def formula_tipo_inmueble(
 # 10. CÁLCULOS EN PYTHON: VENDIDO, UNIDADES Y MOROSOS
 # =========================================================
 
+# Detecta que indices de inmuebles tiene 
 def obtener_indices_inmueble(base):
     indices = set()
 
@@ -857,7 +860,7 @@ def obtener_indices_inmueble(base):
 
     return sorted(indices)
 
-
+# Clasifica si una fila es departamento, dpt + estc, estc, dep o local 
 def clasificar_tipos_fila(tipos):
     tipos_norm = [normalizar_texto(t) for t in tipos if str(t).strip() not in ["", "nan", "None"]]
 
@@ -879,28 +882,85 @@ def clasificar_tipos_fila(tipos):
 
     return None
 
+# Valida si un dato sirve para identificar a un cliente
+def valor_cliente_valido(valor):
+    if pd.isna(valor):
+        return False
 
+    texto = str(valor).strip()
+
+    if texto == "":
+        return False
+
+    texto_norm = normalizar_texto(texto)
+
+    valores_invalidos = {
+        "-",
+        "--",
+        "0",
+        "00",
+        "00000000",
+        "000000000",
+        "00000000000",
+        "S/D",
+        "SD",
+        "SIN DNI",
+        "SIN DOCUMENTO",
+        "SIN DOC",
+        "NO TIENE",
+        "NINGUNO",
+        "NAN",
+        "NONE",
+        "NULL",
+    }
+
+    if texto_norm in valores_invalidos:
+        return False
+
+    if re.fullmatch(r"0+", texto_norm):
+        return False
+
+    return True
+
+# Obtiene el identificador del cliente para contar morosos
 def obtener_id_cliente(row):
-    candidatos = [
+    """
+    Prioriza el nombre del titular y su documento
+    """
+
+    # Primero usar el nombre visible del cliente.
+    columnas_nombre = [
+        "Nombres_Titular",
+        "Cliente",
+    ]
+
+    for col in columnas_nombre:
+        if col in row.index:
+            valor = row.get(col)
+
+            if valor_cliente_valido(valor):
+                return normalizar_texto(valor)
+
+    # Respaldo: usar documento solo si es un valor real.
+    columnas_documento = [
         "NroDocumento",
         "Nro_Documento",
         "Documento",
         "NumeroDocumento",
         "NumDocumento",
         "DNI",
-        "Nombres_Titular",
-        "Cliente",
     ]
 
-    for col in candidatos:
+    for col in columnas_documento:
         if col in row.index:
             valor = row.get(col)
-            if pd.notna(valor) and str(valor).strip() != "":
-                return str(valor).strip()
+
+            if valor_cliente_valido(valor):
+                return normalizar_texto(valor)
 
     return None
 
-
+# Calcula precio vendido y la cantidad de unidades por tipo de inmueble
 def calcular_vendido_unidades(base, proyecto):
     base_temp = base.copy()
     base_temp["Proyecto_Corto"] = base_temp["Proyecto"].apply(obtener_nombre_proyecto)
@@ -976,7 +1036,7 @@ def calcular_vendido_unidades(base, proyecto):
 
     return resumen
 
-
+# Calcula clientes morosos y los días promedio de atraso por tipo de inmueble
 def calcular_morosos_y_atraso(base, proyecto):
     fecha_corte = obtener_fecha_corte_reporte()
 
@@ -988,8 +1048,10 @@ def calcular_morosos_y_atraso(base, proyecto):
     base_proyecto = base_temp[base_temp["Proyecto_Corto"] == proyecto].copy()
 
     estado = base_proyecto["Estado"].astype(str).apply(normalizar_texto)
+    estado_vencido = estado.str.contains("VENCIDO", na=False)
+
     base_morosa = base_proyecto[
-        (estado == "VENCIDO")
+        estado_vencido
         & (base_proyecto["Fecha_Programada"].notna())
         & (base_proyecto["Fecha_Programada"] <= fecha_corte)
         & (base_proyecto["SaldoPorPagarCuota"].fillna(0) > 0)
@@ -1024,13 +1086,18 @@ def calcular_morosos_y_atraso(base, proyecto):
             continue
 
         cliente = obtener_id_cliente(row)
+
         if cliente is None:
             continue
 
         saldo = pd.to_numeric(row.get("SaldoPorPagarCuota", 0), errors="coerce")
         saldo = 0 if pd.isna(saldo) else float(saldo)
 
+        if saldo <= 0:
+            continue
+
         fecha_programada = pd.to_datetime(row.get("Fecha_Programada"), errors="coerce")
+
         if pd.isna(fecha_programada):
             continue
 
@@ -1038,7 +1105,7 @@ def calcular_morosos_y_atraso(base, proyecto):
 
         registros.append({
             "categoria": categoria,
-            "cliente": str(cliente).strip(),
+            "cliente": cliente,
             "saldo": saldo,
             "dias": dias,
         })
@@ -1055,7 +1122,10 @@ def calcular_morosos_y_atraso(base, proyecto):
             return {"clientes": 0, "dias": 0}
 
         deuda_cliente = temp.groupby("cliente", as_index=False)["saldo"].sum()
-        clientes_con_deuda = deuda_cliente[deuda_cliente["saldo"] > 0]["cliente"].tolist()
+
+        clientes_con_deuda = deuda_cliente[
+            deuda_cliente["saldo"] > 0
+        ]["cliente"].tolist()
 
         if not clientes_con_deuda:
             return {"clientes": 0, "dias": 0}
@@ -1076,8 +1146,19 @@ def calcular_morosos_y_atraso(base, proyecto):
     resultado["Estacionamientos"] = calcular_para(["Estacionamientos"])
     resultado["Depositos"] = calcular_para(["Depositos"])
     resultado["Local Comercial"] = calcular_para(["Local Comercial"])
-    resultado["Departamentos"] = calcular_para(["Departamento", "Departamento + Estacionamiento"])
-    resultado["Total"] = calcular_para(["Departamento", "Departamento + Estacionamiento", "Estacionamientos", "Depositos", "Local Comercial"])
+
+    resultado["Departamentos"] = calcular_para([
+        "Departamento",
+        "Departamento + Estacionamiento",
+    ])
+
+    resultado["Total"] = calcular_para([
+        "Departamento",
+        "Departamento + Estacionamiento",
+        "Estacionamientos",
+        "Depositos",
+        "Local Comercial",
+    ])
 
     return resultado
 
@@ -1086,6 +1167,7 @@ def calcular_morosos_y_atraso(base, proyecto):
 # 11. ACTUALIZACIÓN DEL CUADRO SUPERIOR
 # =========================================================
 
+# Llena el cuadro con la informacion
 def actualizar_resumen_superior(ws, base, proyecto, columnas_excel, max_fila):
     celda_proyecto = "$B$6"
 
@@ -1203,6 +1285,7 @@ def actualizar_resumen_superior(ws, base, proyecto, columnas_excel, max_fila):
 # 12. ACTUALIZACIÓN DE BLOQUES DE COBRANZA
 # =========================================================
 
+# Actualiza los cuadros de cobranza real, proyectada y morosa
 def actualizar_bloque_cobranzas(
     ws,
     titulo_bloque,
@@ -1310,8 +1393,6 @@ def actualizar_bloque_cobranzas(
             celda.number_format = "mmm-yy"
 
     # Encabezado Total.
-    # Debe conservar el mismo formato azul del encabezado de meses/años,
-    # no el formato gris de la columna Total del cuerpo.
     celda_total_header = ws.cell(row=fila_encabezado, column=col_total)
     celda_total_header.value = "Total"
 
@@ -1405,6 +1486,7 @@ def actualizar_bloque_cobranzas(
 # 13. GENERAR REPORTE
 # =========================================================
 
+# Genera el archivo final
 def generar_reporte_cobranzas(base):
     validar_columnas_reporte(base)
 
@@ -1518,6 +1600,7 @@ def generar_reporte_cobranzas(base):
 # 14. EJECUCIÓN
 # =========================================================
 
+# Decide si primero ejecuta descarga y luego carga la base ajustada
 def preparar_base_cobranzas(actualizar_base=True):
     if actualizar_base:
         ejecutar_descarga_cobranzas()
@@ -1525,7 +1608,7 @@ def preparar_base_cobranzas(actualizar_base=True):
     base_consolidada, ruta_base = cargar_base_consolidada()
     return base_consolidada, ruta_base
 
-
+# Genera solo el reporte usando la base cargada
 def generar_solo_reporte_cobranzas(base_consolidada):
     """
     Genera Reporte_Cobranzas.xlsx usando directamente Base_Ajustada.
@@ -1533,6 +1616,7 @@ def generar_solo_reporte_cobranzas(base_consolidada):
     ruta_reporte = generar_reporte_cobranzas(base_consolidada)
     return ruta_reporte
 
+# Ejecuta el flujo completo: base + reporte
 def ejecutar_reporte_cobranzas(actualizar_base=True):
     base_consolidada, ruta_base = preparar_base_cobranzas(actualizar_base=actualizar_base)
     ruta_reporte = generar_solo_reporte_cobranzas(base_consolidada)
@@ -1547,12 +1631,12 @@ def ejecutar_reporte_cobranzas(actualizar_base=True):
 
     return base_consolidada, ruta_base, ruta_reporte
 
-
+# Funcion de compatibilidad con nombres anteriores
 def consolidar_cobranzas():
     """Compatibilidad con nombres anteriores."""
     return ejecutar_reporte_cobranzas(actualizar_base=EJECUTAR_DESCARGA)
 
-
+# Punto de entrada cuando ejecutas el archivo directamente
 def main():
     ejecutar_reporte_cobranzas(actualizar_base=EJECUTAR_DESCARGA)
 

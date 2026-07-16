@@ -1,3 +1,17 @@
+# Programa para reporte de cobranzas por cliente
+# Creado por Eduardo Miguel Huamani Acosta                             16/07/26
+
+# Esta automatización trata de elaborar un reporte por cliente y por proyecto. Al momento de elaborar el reporte se tendría que
+# quitar los duplicados, sumar los montos, lo cual es complicado formular en excel. 
+
+# Este código permite extraer información de las cobranzas y elabora un reporte de clientes morosos, ahorrandose el 
+# trabajo de formular, quitar duplicados. Este reporte de lo que se hacía en 2 - 3 horas, 
+# con el codigo se podrá tener el reporte completo en 2 - 3 minutos.
+
+# =============================================================================================================================
+
+#LIBRERIAS
+
 import sys
 import re
 import unicodedata
@@ -9,8 +23,9 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import Alignment
+from openpyxl.styles import Font, Alignment
 from openpyxl.formatting.formatting import ConditionalFormattingList
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -19,12 +34,8 @@ if str(BASE_DIR) not in sys.path:
 
 from Conexiones.connection import (  # noqa: E402
     FECHA_CORTE_REPORTE,
+    PROYECTO,
 )
-
-try:
-    from Conexiones.connection import PROYECTO as PROYECTO_CONNECTION  # noqa: E402
-except ImportError:
-    PROYECTO_CONNECTION = {}
 
 try:
     from Conexiones.connection import PROYECTOS_VIGENTES_COBRANZAS  # noqa: E402
@@ -67,18 +78,8 @@ SALIDA_LISTA.mkdir(parents=True, exist_ok=True)
 RANGOS_BARRAS_DEUDA = []
 
 
-PROYECTO_DEFAULT = {
-    "RESIDENCIAL PRADA": "Prada",
-    "PRADA": "Prada",
-    "RESIDENCIAL BEYOND": "Beyond",
-    "BEYOND": "Beyond",
-    "RESIDENCIAL VENECIA": "Venecia",
-    "VENECIA": "Venecia",
-}
-
-# Usa primero el diccionario PROYECTO definido en Conexiones/connection.py.
-# Si no existe, usa el diccionario por defecto.
-PROYECTO = PROYECTO_CONNECTION if PROYECTO_CONNECTION else PROYECTO_DEFAULT
+# Diccionario oficial de proyectos importado desde Conexiones/connection.py.
+# No se usa PROYECTO_DEFAULT ni fallback local.
 
 ORDEN_PROYECTOS = list(dict.fromkeys([
     str(nombre_comercial).strip()
@@ -107,16 +108,14 @@ COLUMNAS_NUMERO_CON_INDICE = [
 # 2. FUNCIONES GENERALES
 # =========================================================
 
+# Ejecuta el script Descarga_Cobranzas
 def ejecutar_descarga_cobranzas():
     """
     Ejecuta Descarga_Cobranzas.py.
-
-    Ese script debe generar:
-    Flujo / Output / Base_Cobranzas_Ajustado.xlsx
     """
     descarga.main()
 
-
+# Limpia textos para comparar sin errores
 def normalizar_texto(texto):
     texto = str(texto).strip().upper()
     texto = unicodedata.normalize("NFKD", texto)
@@ -126,7 +125,7 @@ def normalizar_texto(texto):
     )
     return texto
 
-
+# Convierte el nombre largo del proyecto al nombre comercial.
 def obtener_nombre_proyecto(proyecto):
     proyecto_normalizado = normalizar_texto(proyecto)
 
@@ -140,7 +139,7 @@ def obtener_nombre_proyecto(proyecto):
 
     return str(proyecto).strip()
 
-
+# Convierte textos a números
 def convertir_columna_numero(serie):
     serie = serie.astype(str).str.strip()
     serie = serie.str.replace("S/", "", regex=False)
@@ -151,7 +150,7 @@ def convertir_columna_numero(serie):
     serie = serie.replace("", pd.NA)
     return pd.to_numeric(serie, errors="coerce")
 
-
+# Identifica qué columnas tienen que ser numericas
 def es_columna_numero(columna):
     if columna in COLUMNAS_NUMERO_FIJAS:
         return True
@@ -162,7 +161,7 @@ def es_columna_numero(columna):
 
     return False
 
-
+# Convierte fechas y montos de la base para que se puedan calcular correctamente.
 def convertir_tipos_base(base):
     base = base.copy()
 
@@ -180,7 +179,7 @@ def convertir_tipos_base(base):
 
     return base
 
-
+# Lee la fecha de corte y lo cambia a fecha real
 def obtener_fecha_corte():
     fecha_corte = pd.to_datetime(
         FECHA_CORTE_REPORTE,
@@ -196,7 +195,7 @@ def obtener_fecha_corte():
 
     return fecha_corte
 
-
+# Busca qué columna se usará para identificar al cliente
 def obtener_columna_cliente(base):
     candidatos = [
         "NroDocumento",
@@ -218,7 +217,7 @@ def obtener_columna_cliente(base):
         "Debe existir NroDocumento, Documento, Nombres_Titular o Cliente."
     )
 
-
+# Devuelve el nombre visible del cliente.
 def obtener_nombre_cliente(row):
     candidatos = [
         "Nombres_Titular",
@@ -235,7 +234,7 @@ def obtener_nombre_cliente(row):
 
     return "Sin cliente"
 
-
+# Detecta cuántas columnas de inmueble existen (TipoInmueble)
 def obtener_indices_inmueble(base):
     indices = set()
 
@@ -246,7 +245,7 @@ def obtener_indices_inmueble(base):
 
     return sorted(indices)
 
-
+# Detecta cuántas columnas de inmueble existen
 def limpiar_tipo_inmueble(tipo):
     tipo_norm = normalizar_texto(tipo)
 
@@ -261,7 +260,7 @@ def limpiar_tipo_inmueble(tipo):
 
     return str(tipo).strip()
 
-
+# Obtiene las unidades de una fila
 def obtener_unidades_fila(row, indices):
     unidades = []
 
@@ -299,12 +298,12 @@ def obtener_unidades_fila(row, indices):
 
     return unidades
 
-
+# Crea una clave interna para agrupar una unidad o conjunto de unidades.
 def obtener_clave_unidad(unidades):
     claves = [u["clave"] for u in unidades]
     return " | ".join(claves)
 
-
+# Crea el texto visible de la unidad. Ej: Dpto-205
 def obtener_label_unidad(unidades):
     labels = []
     vistos = set()
@@ -318,7 +317,7 @@ def obtener_label_unidad(unidades):
 
     return ", ".join(labels)
 
-
+# Obtiene el tipo de financiamiento del cliente
 def obtener_financiamiento(row):
     candidatos = [
         "TipoFinanciamiento",
@@ -334,7 +333,7 @@ def obtener_financiamiento(row):
 
     return ""
 
-
+# Filtra la base para dejar solo los proyectos vigentes
 def filtrar_proyectos_vigentes(df):
     if not PROYECTOS_VIGENTES_COBRANZAS:
         return df
@@ -348,23 +347,167 @@ def filtrar_proyectos_vigentes(df):
         df["Proyecto"].astype(str).apply(obtener_nombre_proyecto).apply(normalizar_texto).isin(proyectos_permitidos)
     ].copy()
 
+# Busca qué columna representa la deuda: 
+def obtener_columna_deuda_resumen(resumen_cliente):
+    posibles_columnas = [
+        "Vencido",
+        "Deuda",
+        "Monto Deuda",
+        "Monto_Deuda",
+    ]
 
-# =========================================================
-# 3. CARGA DE ARCHIVOS
-# =========================================================
+    for columna in posibles_columnas:
+        if columna in resumen_cliente.columns:
+            return columna
 
+    raise ValueError(
+        "❌ No se encontró columna de deuda en resumen_cliente. "
+        "Revisa si se llama Vencido, Deuda o Monto Deuda."
+    )
+
+# Une textos
+def unir_texto_con_y(elementos):
+    elementos = [str(x).strip() for x in elementos if str(x).strip() != ""]
+
+    if not elementos:
+        return ""
+
+    if len(elementos) == 1:
+        return elementos[0]
+
+    if len(elementos) == 2:
+        return f"{elementos[0]} y {elementos[1]}"
+
+    return ", ".join(elementos[:-1]) + f" y {elementos[-1]}"
+
+# Detecta clientes morosos que aparecen con deuda en más de un proyecto.
+def detectar_clientes_morosos_multiproyecto(resumen_cliente):
+    """
+    Detecta clientes morosos que aparecen con deuda vencida en más de un proyecto.
+    """
+
+    if resumen_cliente.empty:
+        return []
+
+    columna_deuda = obtener_columna_deuda_resumen(resumen_cliente)
+
+    base = resumen_cliente.copy()
+
+    if "Cliente_ID" not in base.columns:
+        base["Cliente_ID"] = base["Cliente"].astype(str).str.strip().str.upper()
+
+    base[columna_deuda] = pd.to_numeric(
+        base[columna_deuda],
+        errors="coerce",
+    ).fillna(0)
+
+    deudores = base[base[columna_deuda] > 0].copy()
+
+    if deudores.empty:
+        return []
+
+    alertas = []
+
+    for cliente_id, temp in deudores.groupby("Cliente_ID"):
+        proyectos = sorted(temp["Proyecto"].dropna().astype(str).str.strip().unique())
+
+        if len(proyectos) <= 1:
+            continue
+
+        cliente = str(temp["Cliente"].dropna().iloc[0]).strip()
+
+        alertas.append({
+            "Cliente": cliente,
+            "Cliente_ID": cliente_id,
+            "Proyectos": proyectos,
+        })
+
+    return alertas
+
+# Construye el texto en donde se menciona que un cliente debe mas de un proyecto
+def construir_texto_nota_multiproyecto(resumen_cliente):
+    alertas = detectar_clientes_morosos_multiproyecto(resumen_cliente)
+
+    if not alertas:
+        return ""
+
+    textos = []
+
+    for alerta in alertas:
+        cliente = alerta["Cliente"]
+        proyectos_texto = unir_texto_con_y(alerta["Proyectos"])
+
+        textos.append(
+            f"{cliente} es cliente de {proyectos_texto}."
+        )
+
+    return " ".join(textos)
+
+# Escribe la nota debajo del TOTAL en la hoja Reporte_Proyecto
+def agregar_nota_multiproyecto_reporte_proyecto(ws, resumen_cliente, fila_total):
+    """
+    Agrega una nota debajo de la fila TOTAL en Reporte_Proyecto.
+
+    La nota aparece solo si existe un cliente moroso en más de un proyecto.
+    Ejemplo:
+        Nota: Marynn Yahara Minetto Peralta es cliente de Prada y Beyond.
+    """
+
+    texto_nota = construir_texto_nota_multiproyecto(resumen_cliente)
+
+    if texto_nota == "":
+        return
+
+    fila_nota = fila_total + 3
+
+    # Descombinar una nota anterior si la hubiera en esa fila.
+    for rango in list(ws.merged_cells.ranges):
+        if rango.min_row == fila_nota and rango.max_row == fila_nota:
+            ws.unmerge_cells(str(rango))
+
+    # Limpiar zona de nota anterior.
+    for col in range(1, 9):
+        ws.cell(row=fila_nota, column=col).value = None
+
+    # "Nota:" en negrita y cursiva.
+    celda_titulo = ws.cell(row=fila_nota, column=1)
+    celda_titulo.value = "Nota:"
+    celda_titulo.font = Font(bold=True, italic=True)
+    celda_titulo.alignment = Alignment(horizontal="left", vertical="center")
+
+    # Texto dinámico de la nota.
+    celda_texto = ws.cell(row=fila_nota, column=2)
+    celda_texto.value = texto_nota
+    celda_texto.font = Font(bold=False, italic=False)
+    celda_texto.alignment = Alignment(
+        horizontal="left",
+        vertical="center",
+        wrap_text=True,
+    )
+
+    # Combinar columnas para que la nota tenga espacio.
+    ws.merge_cells(
+        start_row=fila_nota,
+        start_column=2,
+        end_row=fila_nota,
+        end_column=8,
+    )
+
+    ws.row_dimensions[fila_nota].height = 24
+
+# Busca la plantilla Plantilla_Cobranza_por_cliente_para_gerencia.xlsx
 def buscar_plantilla():
     ruta = CARPETA_PLANTILLAS / NOMBRE_PLANTILLA_GERENCIA
 
     if not ruta.exists():
         raise FileNotFoundError(
-            "No se encontró la plantilla de gerencia.\n"
+            "No se encontró la plantilla.\n"
             f"Ruta esperada: {ruta}"
         )
 
     return ruta
 
-
+# Lee Base_Cobranzas_Ajustado.xlsx, convierte tipos y filtra proyectos vigentes.
 def cargar_base_ajustada():
     ruta = SALIDA_LISTA / NOMBRE_BASE_AJUSTADA
 
@@ -396,7 +539,7 @@ def cargar_base_ajustada():
 
     return base, ruta
 
-
+# Verifica que la base tenga las columnas necesarias para generar el reporte.
 def validar_base(base):
     columnas_obligatorias = [
         "Proyecto",
@@ -427,6 +570,8 @@ def validar_base(base):
 # 4. CÁLCULOS DEL REPORTE
 # =========================================================
 
+# Construye la tabla principal por cliente y unidad inmobiliaria. 
+# Calcula vendido, cobrado, por cobrar, vencido, deuda, tasa de morosidad y días de atraso.
 def construir_resumen_cliente_unidad(base):
     validar_base(base)
 
@@ -550,8 +695,71 @@ def construir_resumen_cliente_unidad(base):
 
     return resumen
 
+# Calcula los días de atraso promedio por proyecto usando la base directa
+def calcular_dias_atraso_por_proyecto_desde_base(base):
+    """
+    Calcula los días de atraso promedio por proyecto usando la misma lógica
+    del Reporte_Cobranzas:
+    """
 
-def construir_resumen_proyecto(resumen_cliente):
+    fecha_corte = obtener_fecha_corte()
+
+    base_temp = base.copy()
+    base_temp["Proyecto_Corto"] = base_temp["Proyecto"].apply(obtener_nombre_proyecto)
+
+    estado = base_temp["Estado"].astype(str).apply(normalizar_texto)
+
+    fecha_programada = pd.to_datetime(
+        base_temp["Fecha_Programada"],
+        errors="coerce",
+    )
+
+    saldo = pd.to_numeric(
+        base_temp["SaldoPorPagarCuota"],
+        errors="coerce",
+    ).fillna(0)
+
+    base_morosa = base_temp[
+        estado.str.contains("VENCIDO", na=False)
+        & fecha_programada.notna()
+        & (fecha_programada <= fecha_corte)
+        & (saldo > 0)
+    ].copy()
+
+    if base_morosa.empty:
+        return {}
+
+    base_morosa["Fecha_Programada"] = pd.to_datetime(
+        base_morosa["Fecha_Programada"],
+        errors="coerce",
+    )
+
+    base_morosa["Dias_Atraso_Calculo"] = (
+        fecha_corte - base_morosa["Fecha_Programada"]
+    ).dt.days.clip(lower=0)
+
+    resumen_dias = (
+        base_morosa
+        .groupby("Proyecto_Corto", as_index=False)["Dias_Atraso_Calculo"]
+        .mean()
+    )
+
+    resultado = {}
+
+    for _, row in resumen_dias.iterrows():
+        proyecto = str(row["Proyecto_Corto"]).strip()
+        dias = row["Dias_Atraso_Calculo"]
+
+        if pd.isna(dias):
+            dias = 0
+
+        resultado[proyecto] = int(round(dias, 0))
+
+    return resultado
+
+# Resume la información por proyecto: precio venta, cobrado, por cobrar, vencido, tasa de morosidad, 
+# clientes morosos y días promedio
+def construir_resumen_proyecto(resumen_cliente, base=None):
     if resumen_cliente.empty:
         return pd.DataFrame(columns=[
             "Proyecto",
@@ -564,11 +772,14 @@ def construir_resumen_proyecto(resumen_cliente):
             "Días de Atraso Promedio",
         ])
 
+    if base is not None:
+        dias_por_proyecto = calcular_dias_atraso_por_proyecto_desde_base(base)
+    else:
+        dias_por_proyecto = {}
+
     proyectos = []
 
-    for proyecto, temp in resumen_cliente.groupby("Proyecto", dropna=False):
-        temp = temp.copy()
-
+    for proyecto, temp in resumen_cliente.groupby("Proyecto"):
         precio_venta = float(temp["Monto Vendido"].sum())
         cobrado = float(temp["Monto Cobrado"].sum())
         por_cobrar = float(temp["Por Cobrar"].sum())
@@ -577,10 +788,16 @@ def construir_resumen_proyecto(resumen_cliente):
         temp_morosos = temp[temp["Vencido"] > 0].copy()
         clientes_morosos = temp_morosos["Cliente_ID"].nunique()
 
-        if not temp_morosos.empty:
-            dias_promedio = int(round(temp_morosos["Días de Atraso"].mean(), 0))
+        # IMPORTANTE:
+        # Si tenemos la base, usamos el promedio por cuota vencida,
+        # igual que Reporte_Cobranzas.
+        if base is not None:
+            dias_promedio = dias_por_proyecto.get(str(proyecto).strip(), 0)
         else:
-            dias_promedio = 0
+            if not temp_morosos.empty:
+                dias_promedio = int(round(temp_morosos["Días de Atraso"].mean(), 0))
+            else:
+                dias_promedio = 0
 
         tasa_morosidad = vencido / precio_venta if precio_venta > 0 else 0
 
@@ -592,10 +809,11 @@ def construir_resumen_proyecto(resumen_cliente):
             "Vencido": vencido,
             "Tasa Morosidad": tasa_morosidad,
             "Cantidad de Clientes Morosos": int(clientes_morosos),
-            "Días de Atraso Promedio": dias_promedio,
+            "Días de Atraso Promedio": int(dias_promedio),
         })
 
     resumen_proyecto = pd.DataFrame(proyectos)
+
     resumen_proyecto = resumen_proyecto.sort_values(
         by=["Vencido", "Por Cobrar", "Precio Venta"],
         ascending=[False, False, False],
@@ -608,6 +826,7 @@ def construir_resumen_proyecto(resumen_cliente):
 # 5. UTILIDADES DE FORMATO EXCEL
 # =========================================================
 
+# Guarda el formato de una fila de la plantilla.
 def capturar_estilo_fila(ws, fila, max_col):
     estilos = {
         "height": ws.row_dimensions[fila].height,
@@ -628,7 +847,7 @@ def capturar_estilo_fila(ws, fila, max_col):
 
     return estilos
 
-
+# Aplica un estilo guardado a una nueva fila.
 def aplicar_estilo_fila(ws, fila, estilo, max_col):
     if estilo.get("height") is not None:
         ws.row_dimensions[fila].height = estilo["height"]
@@ -647,22 +866,17 @@ def aplicar_estilo_fila(ws, fila, estilo, max_col):
         celda.number_format = cfg["number_format"]
         celda.protection = copy(cfg["protection"])
 
-
+# Alterna estilos de filas: blanco, gris, blanco, gris.
 def obtener_estilo_alternado(estilos, indice):
     """
     Devuelve el estilo de fila según el orden visual de la plantilla.
-
-    Regla del diseño:
-    - Primera fila de datos: blanco.
-    - Segunda fila de datos: #F4F6F8.
-    - Luego se alterna sucesivamente.
     """
     if not estilos:
         raise ValueError("No se enviaron estilos para alternar filas.")
 
     return estilos[indice % len(estilos)]
 
-
+# Centra el contenido de una fila.
 def centrar_rango_fila(ws, fila, col_inicio, col_fin):
     """Centra el contenido de una fila dinámica sin cambiar colores ni bordes."""
     for col in range(col_inicio, col_fin + 1):
@@ -673,34 +887,20 @@ def centrar_rango_fila(ws, fila, col_inicio, col_fin):
             wrap_text=True,
         )
 
-
+# Aplica alto fijo a las filas dinámicas de clientes.
 def aplicar_alto_fila_cliente(ws, fila):
     """Aplica alto fijo a filas dinámicas de clientes: 21.6 pt ≈ 28.8 px."""
     ws.row_dimensions[fila].height = ALTO_FILA_CLIENTE_PUNTOS
 
-
+# Limpia formatos condicionales heredados de la plantilla para evitar errores de Excel.
 def limpiar_formato_condicional(ws):
-    """
-    Limpia reglas de formato condicional heredadas de la plantilla.
-
-    Se usa el objeto público ConditionalFormattingList, no el atributo interno
-    _cf_rules, para evitar que Excel muestre el aviso de reparación del archivo.
-    """
     try:
         ws.conditional_formatting = ConditionalFormattingList()
     except Exception:
         pass
 
-
+# Guarda el rango donde luego se aplicará una barra visual de deuda.
 def aplicar_barra_deuda(ws, fila_inicio, fila_fin, max_deuda, columna='J'):
-    """
-    Registra el rango de Monto Deuda para aplicar barras al final.
-
-    Importante:
-    No se crean DataBarRule con openpyxl porque Excel puede mostrar el aviso
-    de reparación cuando hay rangos dinámicos y celdas combinadas.
-    Las barras se agregan después de guardar, usando Excel nativo por COM.
-    """
     if fila_fin < fila_inicio or max_deuda <= 0:
         return
 
@@ -710,7 +910,7 @@ def aplicar_barra_deuda(ws, fila_inicio, fila_fin, max_deuda, columna='J'):
         "max_deuda": float(max_deuda),
     })
 
-
+# Convierte color HEX a formato que entiende Excel COM
 def color_excel_rgb(hex_color):
     """Convierte HEX RGB a entero BGR usado por Excel COM."""
     hex_color = str(hex_color).replace("#", "").strip()
@@ -719,15 +919,8 @@ def color_excel_rgb(hex_color):
     b = int(hex_color[4:6], 16)
     return r + (g * 256) + (b * 65536)
 
-
+# Abre el archivo con Excel nativo y aplica las barras de deuda sin dañar el archivo.
 def aplicar_barras_deuda_excel_nativo(ruta_excel):
-    """
-    Aplica barras de datos con Excel nativo para evitar archivos dañados.
-
-    Requiere Windows + Microsoft Excel instalado + pywin32.
-    Si pywin32 no está instalado, instala una vez:
-        pip install pywin32
-    """
     if not RANGOS_BARRAS_DEUDA:
         return
 
@@ -790,7 +983,7 @@ def aplicar_barras_deuda_excel_nativo(ruta_excel):
         if excel is not None:
             excel.Quit()
 
-
+# Descombina celdas desde cierta fila hacia abajo.
 def descombinar_desde_fila(ws, fila_inicio):
     rangos = list(ws.merged_cells.ranges)
 
@@ -798,19 +991,19 @@ def descombinar_desde_fila(ws, fila_inicio):
         if rango.min_row >= fila_inicio:
             ws.unmerge_cells(str(rango))
 
-
+# Borra filas antiguas desde cierta fila.
 def limpiar_desde_fila(ws, fila_inicio):
     descombinar_desde_fila(ws, fila_inicio)
 
     if ws.max_row >= fila_inicio:
         ws.delete_rows(fila_inicio, ws.max_row - fila_inicio + 1)
 
-
+# Combina celdas solo si todavía no están combinadas.
 def combinar_seguro(ws, rango):
     if rango not in [str(r) for r in ws.merged_cells.ranges]:
         ws.merge_cells(rango)
 
-
+# Aplica combinaciones de celdas en la hoja Reporte_General
 def aplicar_merges_reporte_general(ws, fila, tipo):
     if tipo == "proyecto":
         rangos = ["A:E", "F:G", "H:I", "J:K", "L:M"]
@@ -823,7 +1016,7 @@ def aplicar_merges_reporte_general(ws, fila, tipo):
         inicio, fin = rango.split(":")
         combinar_seguro(ws, f"{inicio}{fila}:{fin}{fila}")
 
-
+# Aplica combinaciones de celdas en la hoja Reporte_Cliente
 def aplicar_merges_reporte_cliente(ws, fila):
     rangos = ["B:D", "E:F", "G:H", "I:J", "K:L", "O:P"]
 
@@ -831,7 +1024,7 @@ def aplicar_merges_reporte_cliente(ws, fila):
         inicio, fin = rango.split(":")
         combinar_seguro(ws, f"{inicio}{fila}:{fin}{fila}")
 
-
+# Aplica formato de monto, porcentaje y días en Reporte_General.
 def aplicar_formatos_num_reporte_general(ws, fila):
     for col in [8, 9, 10]:
         ws.cell(row=fila, column=col).number_format = FORMATO_MONTO
@@ -839,7 +1032,7 @@ def aplicar_formatos_num_reporte_general(ws, fila):
     ws.cell(row=fila, column=12).number_format = FORMATO_PORCENTAJE
     ws.cell(row=fila, column=13).number_format = FORMATO_DIAS
 
-
+# Aplica formato de monto, porcentaje y días en Reporte_Cliente.
 def aplicar_formatos_num_reporte_cliente(ws, fila):
     for col in [9, 11]:
         ws.cell(row=fila, column=col).number_format = FORMATO_MONTO
@@ -847,7 +1040,7 @@ def aplicar_formatos_num_reporte_cliente(ws, fila):
     ws.cell(row=fila, column=13).number_format = FORMATO_DIAS
     ws.cell(row=fila, column=15).number_format = FORMATO_PORCENTAJE
 
-
+# Aplica formato de monto, porcentaje y días en Reporte_Proyecto.
 def aplicar_formatos_num_reporte_proyecto(ws, fila):
     for col in [2, 3, 4, 5]:
         ws.cell(row=fila, column=col).number_format = FORMATO_MONTO
@@ -856,7 +1049,7 @@ def aplicar_formatos_num_reporte_proyecto(ws, fila):
     ws.cell(row=fila, column=7).number_format = FORMATO_DIAS
     ws.cell(row=fila, column=8).number_format = FORMATO_DIAS
 
-
+# Inserta la hoja Base_Ajustada dentro del reporte final y la oculta.
 def escribir_base_ajustada_en_reporte(wb, base):
     if NOMBRE_HOJA_BASE_AJUSTADA in wb.sheetnames:
         ws_base = wb[NOMBRE_HOJA_BASE_AJUSTADA]
@@ -892,6 +1085,7 @@ def escribir_base_ajustada_en_reporte(wb, base):
 # 6. LLENADO DE HOJAS
 # =========================================================
 
+# Llena la hoja Reporte_General, agrupando clientes morosos por proyecto.
 def llenar_reporte_general(wb, resumen_cliente):
     ws = wb[HOJA_REPORTE_GENERAL]
 
@@ -899,7 +1093,6 @@ def llenar_reporte_general(wb, resumen_cliente):
     estilo_encabezado = capturar_estilo_fila(ws, 8, 13)
 
     # La plantilla tiene filas de datos alternadas:
-    # fila 9 = blanco, fila 10 = gris #F4F6F8.
     estilo_dato_blanco = capturar_estilo_fila(ws, 9, 13)
     estilo_dato_gris = capturar_estilo_fila(ws, 10, 13) if ws.max_row >= 10 else estilo_dato_blanco
     estilos_datos = [estilo_dato_blanco, estilo_dato_gris]
@@ -915,9 +1108,7 @@ def llenar_reporte_general(wb, resumen_cliente):
         ascending=[True, False, False],
     )
 
-    # El resumen superior debe cuadrar con los bloques por proyecto.
-    # Por eso, Clientes con deuda se llena al final como suma de los valores
-    # que aparecen al costado de cada bloque donde dice CLIENTE.
+    # El resumen superior debe cuadrar con los bloques por proyecto..
     total_deuda_general = 0.0
     total_clientes_general = 0
 
@@ -1041,7 +1232,7 @@ def llenar_reporte_general(wb, resumen_cliente):
 
     ws.freeze_panes = "A8"
 
-
+# Llena la hoja Reporte_Cliente, mostrando el ranking general de clientes con deuda.
 def llenar_reporte_cliente(wb, resumen_cliente):
     ws = wb[HOJA_REPORTE_CLIENTE]
 
@@ -1101,17 +1292,15 @@ def llenar_reporte_cliente(wb, resumen_cliente):
     ws.freeze_panes = "A5"
 
 
-
+# Crea una fórmula para validar que Precio Venta = Cobrado + Por Cobrar + Vencido.
 def formula_validador_reporte_proyecto(fila):
     """
     Valida que el precio de venta cuadre con:
     Cobrado + Por Cobrar + Vencido.
-
-    Devuelve OK si cuadra y REVISAR si hay diferencia.
     """
     return f'=IF(ROUND(B{fila},0)=ROUND(C{fila}+D{fila}+E{fila},0),"OK","REVISAR")'
 
-
+# Llena la hoja Reporte_Proyecto con el resumen por proyecto y agrega la nota multiproyecto debajo del TOTAL.
 def llenar_reporte_proyecto(wb, resumen_proyecto, resumen_cliente):
     ws = wb[HOJA_REPORTE_PROYECTO]
 
@@ -1156,8 +1345,17 @@ def llenar_reporte_proyecto(wb, resumen_proyecto, resumen_cliente):
     total_por_cobrar = float(resumen_proyecto["Por Cobrar"].sum()) if not resumen_proyecto.empty else 0.0
     total_vencido = float(resumen_proyecto["Vencido"].sum()) if not resumen_proyecto.empty else 0.0
 
+    # Total dinámico de clientes morosos:
+    # se suma lo mostrado por cada proyecto.
+    # Esto evita confusión cuando un mismo cliente aparece en más de un proyecto.
+    total_clientes_morosos = int(
+        resumen_proyecto["Cantidad de Clientes Morosos"].fillna(0).sum()
+    ) if not resumen_proyecto.empty else 0
+
+    # Total de días de atraso:
+    # mantiene el criterio global del resumen cliente.
+    # Los días por proyecto ya vienen calculados desde la base para coincidir con Reporte_Cobranzas.
     deudores = resumen_cliente[resumen_cliente["Deuda"] > 0].copy()
-    total_clientes_morosos = int(deudores["Cliente_ID"].nunique()) if not deudores.empty else 0
 
     if not deudores.empty:
         dias_total = int(round(deudores["Días de Atraso"].mean(), 0))
@@ -1179,13 +1377,15 @@ def llenar_reporte_proyecto(wb, resumen_proyecto, resumen_cliente):
     aplicar_formatos_num_reporte_proyecto(ws, fila_total)
     centrar_rango_fila(ws, fila_total, 1, 9)
 
+    # Nota dinámica debajo de la fila TOTAL.
+    agregar_nota_multiproyecto_reporte_proyecto(
+        ws=ws,
+        resumen_cliente=resumen_cliente,
+        fila_total=fila_total,
+    )
+
     ws.freeze_panes = "A5"
-
-
-# =========================================================
-# 7. GENERACIÓN DEL REPORTE
-# =========================================================
-
+# # generar_reporte_gerencia
 def generar_reporte_gerencia(base):
     RANGOS_BARRAS_DEUDA.clear()
 
@@ -1193,7 +1393,10 @@ def generar_reporte_gerencia(base):
     ruta_salida = SALIDA_LISTA / NOMBRE_REPORTE_GERENCIA
 
     resumen_cliente = construir_resumen_cliente_unidad(base)
-    resumen_proyecto = construir_resumen_proyecto(resumen_cliente)
+
+    # Se envía también la base para que los días de atraso por proyecto
+    # se calculen igual que en Reporte_Cobranzas.
+    resumen_proyecto = construir_resumen_proyecto(resumen_cliente, base)
 
     wb = load_workbook(ruta_plantilla)
 
@@ -1244,7 +1447,7 @@ def generar_reporte_gerencia(base):
     print(ruta_salida.resolve())
     return ruta_salida
 
-
+# Ejecuta la descarga si corresponde, carga la base ajustada y genera el reporte.
 def ejecutar_reporte_gerencia(actualizar_base=True):
     if actualizar_base:
         ejecutar_descarga_cobranzas()

@@ -66,7 +66,7 @@ def preparar_base_unica():
     base_ajustada = resultado[0]
     ruta_base = Path(resultado[1])
 
-    print("✅ Base preparada correctamente:")
+    print("\n✅ Base preparada correctamente:")
     print(f"   {ruta_base}")
 
     return base_ajustada, ruta_base
@@ -139,9 +139,6 @@ def generar_reporte_gerencia_sin_descarga(base_ajustada):
         raise FileNotFoundError(
             f"❌ No se generó Reporte_para_Gerencia.xlsx:\n{ruta_reporte}"
         )
-
-    print("✅ Reporte para gerencia generado:")
-    print(f"   {ruta_reporte}")
 
     return ruta_reporte
 

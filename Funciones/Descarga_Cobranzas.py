@@ -2,6 +2,17 @@
 
 # Creado por Eduardo Miguel Huamani Acosta                            15/07/26
 
+
+# Este automatización trata de extraer datos desde Evolta, la limitación es que solo permite extraer información con un periodo 
+# de un año, por lo que al momento de descargar de forma manual se podría cometer errores humanos
+
+# Este código permite extraer información bajo el criterio de extraer la información por año y juntarlo en uno solo para 
+# los analisis, de lo que se demoraba de 1 - 2 horas a 30 minutos aproximadamente
+
+# =============================================================================================================================
+
+# LIBRERIAS
+
 from pathlib import Path
 from datetime import datetime, date
 import time
@@ -10,8 +21,8 @@ import os
 import sys
 import re
 import unicodedata
-import pandas as pd
 
+import pandas as pd
 from dotenv import load_dotenv
 
 from selenium import webdriver
@@ -22,30 +33,22 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+
+# =========================================================
+# 1. CONFIGURACIÓN GENERAL
+# =========================================================
+
+BASE_DIR = Path(__file__).resolve().parent.parent    
 
 if str(BASE_DIR) not in sys.path:
     sys.path.append(str(BASE_DIR))
 
-from Conexiones.connection import (
-    FECHA_INICIO_REPORTE,
-    FECHA_FIN_REPORTE,
-)
-
-try:
-    from Conexiones.connection import FECHA_CORTE_REPORTE
-except ImportError:
-    FECHA_CORTE_REPORTE = None
-
-
-# =========================================================
-# 1. VARIABLES QUE PUEDES MODIFICAR
-# =========================================================
+from Conexiones.connection import (FECHA_INICIO_REPORTE, FECHA_FIN_REPORTE, FECHA_CORTE_REPORTE,)
 
 LOGIN_URL = "https://v4.evolta.pe/Login/Acceso/Index"
 REPORTE_COBRANZA_URL = "https://v4.evolta.pe/Reportes/ReporteCobranza/Index"
 
-DOWNLOADS_DIR = Path(r"C:\Users\ehuamani\Downloads")
+DOWNLOADS_DIR = Path(r"C:\Users\ehuamani\Downloads")   #URL de la carpeta
 
 load_dotenv(BASE_DIR / ".env")
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -56,59 +59,89 @@ USUARIO_EVOLTA = os.getenv("USUARIO_EVOLTA")
 CLAVE_EVOLTA = os.getenv("CLAVE_EVOLTA")
 
 ENTRADA_COBRANZAS = BASE_DIR / "Flujo" / "Input" / "Cobranzas"
-ENTRADA_COBRANZAS.mkdir(parents=True, exist_ok=True)
-
 SALIDA_LISTA = BASE_DIR / "Flujo" / "Output"
+
+ENTRADA_COBRANZAS.mkdir(parents=True, exist_ok=True)
 SALIDA_LISTA.mkdir(parents=True, exist_ok=True)
 
 FORMATO_EVOLTA = "Csv"
-
 SEPARADOR_CSV = ","
 
 CONVERTIR_CSV_A_EXCEL = True
-
 OVERWRITE_EXISTING = True
-
 BORRAR_ORIGINAL_DOWNLOADS = False
 
 TIEMPO_ESPERA_DESCARGA = 180
-
 INTENTOS_DESCARGA = 2
 
 NOMBRE_HOJA_BASE = "Base_Cobranzas"
 NOMBRE_BASE_CONSOLIDADA = "Base_Cobranzas_Consolidada.xlsx"
 NOMBRE_BASE_AJUSTADA = "Base_Cobranzas_Ajustado.xlsx"
 
+NOMBRE_HOJA_BASE_ORIGINAL_AJUSTADA = "Base_Original"
+NOMBRE_HOJA_BASE_AJUSTADA = "Base_Ajustada"
+
 COLUMNAS_FECHA = [
     "Fecha_Programada",
     "FechaPago",
-    "FechaOperacionComercial"
+    "FechaOperacionComercial",
 ]
 
 COLUMNAS_NUMERO_FIJAS = [
     "Monto_Cuota",
     "Monto_Cuota_Pagado",
-    "SaldoPorPagarCuota"
+    "SaldoPorPagarCuota",
 ]
 
 COLUMNAS_NUMERO_CON_INDICE = [
     "PrecioLista",
-    "PrecioVenta"
+    "PrecioVenta",
 ]
 
+EXTENSIONES_DESCARGA = [".csv", ".xlsx", ".xls"]
+
 
 # =========================================================
-# 2. FUNCIONES DE FECHA
+# 2. UTILIDADES GENERALES
 # =========================================================
 
+# Limpia textos para compararlos mejor
+def normalizar_texto(texto):
+    texto = str(texto).strip().upper()
+    texto = unicodedata.normalize("NFKD", texto)
+    return "".join(
+        caracter for caracter in texto
+        if not unicodedata.combining(caracter)
+    )
+
+# Convierte la fecha de texto a numero
 def convertir_fecha(fecha_texto: str) -> date:
     return datetime.strptime(fecha_texto, "%d/%m/%Y").date()
 
-
+# Convierte la fecha de numero a texto 
 def fecha_texto(fecha: date) -> str:
     return fecha.strftime("%d/%m/%Y")
 
+# Lee la fecha de corte
+def obtener_fecha_cierre_ajuste():
+    if FECHA_CORTE_REPORTE is None or str(FECHA_CORTE_REPORTE).strip() == "":
+        return None
 
+    fecha_cierre = pd.to_datetime(
+        FECHA_CORTE_REPORTE,
+        errors="coerce",
+        dayfirst=True,
+    )
+
+    if pd.isna(fecha_cierre):
+        raise ValueError(
+            "FECHA_CORTE_REPORTE no tiene un formato válido. "
+            "Usa un formato como '30/06/2026'."
+        )
+
+    return fecha_cierre.normalize()
+
+# Agarra la fecha inicial y final para que el reporte salga por años
 def generar_rangos_por_anio(fecha_inicio_txt: str, fecha_fin_txt: str):
     inicio = convertir_fecha(fecha_inicio_txt)
     fin = convertir_fecha(fecha_fin_txt)
@@ -119,25 +152,78 @@ def generar_rangos_por_anio(fecha_inicio_txt: str, fecha_fin_txt: str):
     rangos = []
 
     for anio in range(inicio.year, fin.year + 1):
-        inicio_anio = date(anio, 1, 1)
-        fin_anio = date(anio, 12, 31)
-
-        desde = max(inicio, inicio_anio)
-        hasta = min(fin, fin_anio)
+        desde = max(inicio, date(anio, 1, 1))
+        hasta = min(fin, date(anio, 12, 31))
 
         rangos.append({
             "anio": anio,
             "fecha_inicio": fecha_texto(desde),
-            "fecha_fin": fecha_texto(hasta)
+            "fecha_fin": fecha_texto(hasta),
         })
 
     return rangos
 
+# Limpia una columna de montos y las convierte a numero
+def convertir_columna_numero(serie):
+    serie = serie.astype(str).str.strip()
+    serie = serie.str.replace("S/", "", regex=False)
+    serie = serie.str.replace("US$", "", regex=False)
+    serie = serie.str.replace("$", "", regex=False)
+    serie = serie.str.replace(" ", "", regex=False)
+    serie = serie.str.replace(",", "", regex=False)
+    serie = serie.replace("", pd.NA)
+
+    return pd.to_numeric(serie, errors="coerce")
+
+# Indica si una columna debe convertirse a numero
+def es_columna_numero(columna):
+    if columna in COLUMNAS_NUMERO_FIJAS:
+        return True
+
+    return any(
+        re.match(rf"^{campo}_(\d+)$", str(columna))
+        for campo in COLUMNAS_NUMERO_CON_INDICE
+    )
+
+# Aplica las conversiones a toda la base
+def convertir_tipos_base(base):
+    base = base.copy()
+
+    for columna in COLUMNAS_FECHA:
+        if columna in base.columns:
+            base[columna] = pd.to_datetime(
+                base[columna],
+                errors="coerce",
+                dayfirst=True,
+            )
+
+    for columna in base.columns:
+        if es_columna_numero(columna):
+            base[columna] = convertir_columna_numero(base[columna])
+
+    return base
+
+
+def validar_columnas(base, columnas, contexto):
+    faltantes = [col for col in columnas if col not in base.columns]
+
+    if faltantes:
+        raise ValueError(
+            f"Faltan columnas requeridas para {contexto}:\n"
+            + "\n".join(f"- {col}" for col in faltantes)
+        )
+
+# Sirve el año desde el nombre del archivo 
+def obtener_anio_archivo(nombre_archivo):
+    coincidencia = re.search(r"(20\d{2})", nombre_archivo)
+    return coincidencia.group(1) if coincidencia else ""
+
 
 # =========================================================
-# 3. FUNCIONES PARA ENTRAR A EVOLTA
+# 3. SELENIUM / EVOLTA
 # =========================================================
 
+# Encuentra el boton Exportar de la página de Evolta
 def obtener_xpath_exportar():
     return """
     //button[contains(normalize-space(.), 'Exportar')]
@@ -146,26 +232,36 @@ def obtener_xpath_exportar():
     | //*[@title='Exportar']
     """
 
-
+# Espera a que un elemento aparezca en la página
 def esperar_elemento(driver, xpath, timeout=30):
     return WebDriverWait(driver, timeout).until(
         EC.presence_of_element_located((By.XPATH, xpath))
     )
 
-
+# Espera que cargue la página de reporte de cobranzas
 def esperar_pagina_reporte(driver, timeout=40):
     WebDriverWait(driver, timeout).until(
         EC.presence_of_element_located((By.XPATH, obtener_xpath_exportar()))
     )
 
-
+# Lleva al navegador directamento al Reporte de Cobranzas de Evolta
 def ir_a_reporte_cobranzas(driver):
     driver.get(REPORTE_COBRANZA_URL)
     esperar_pagina_reporte(driver)
 
 
+def click_seguro(driver, elemento):
+    try:
+        elemento.click()
+    except Exception:
+        try:
+            ActionChains(driver).move_to_element(elemento).pause(0.5).click().perform()
+        except Exception:
+            driver.execute_script("arguments[0].click();", elemento)
+
+# Inicia sesión en Evolta
 def iniciar_sesion_evolta(driver):
-    print("Ingresando a Evolta automáticamente...")
+    print("\n💻 Ingresando a Evolta automáticamente...")
 
     if not USUARIO_EVOLTA or not CLAVE_EVOLTA:
         raise ValueError(
@@ -204,40 +300,31 @@ def iniciar_sesion_evolta(driver):
     campo_usuario = WebDriverWait(driver, 30).until(
         EC.presence_of_element_located((By.XPATH, xpath_usuario))
     )
-
     campo_clave = WebDriverWait(driver, 30).until(
         EC.presence_of_element_located((By.XPATH, xpath_clave))
     )
 
-    campo_usuario.click()
-    campo_usuario.send_keys(Keys.CONTROL, "a")
-    campo_usuario.send_keys(Keys.BACKSPACE)
-    campo_usuario.send_keys(USUARIO_EVOLTA)
-
-    campo_clave.click()
-    campo_clave.send_keys(Keys.CONTROL, "a")
-    campo_clave.send_keys(Keys.BACKSPACE)
-    campo_clave.send_keys(CLAVE_EVOLTA)
+    for campo, valor in [
+        (campo_usuario, USUARIO_EVOLTA),
+        (campo_clave, CLAVE_EVOLTA),
+    ]:
+        campo.click()
+        campo.send_keys(Keys.CONTROL, "a")
+        campo.send_keys(Keys.BACKSPACE)
+        campo.send_keys(valor)
 
     boton_ingresar = WebDriverWait(driver, 30).until(
         EC.element_to_be_clickable((By.XPATH, xpath_boton_ingresar))
     )
 
-    try:
-        boton_ingresar.click()
-    except Exception:
-        try:
-            ActionChains(driver).move_to_element(boton_ingresar).pause(0.5).click().perform()
-        except Exception:
-            driver.execute_script("arguments[0].click();", boton_ingresar)
-
+    click_seguro(driver, boton_ingresar)
     time.sleep(3)
 
     ir_a_reporte_cobranzas(driver)
 
-    print("Sesión iniciada correctamente.")
+    print("\n✅ Sesión iniciada correctamente.")
 
-
+# Selecciona el formato de descarga de Evolta
 def seleccionar_formato(driver, formato: str):
     if formato not in ["Csv", "Excel"]:
         raise ValueError("El formato debe ser 'Csv' o 'Excel'.")
@@ -250,11 +337,10 @@ def seleccionar_formato(driver, formato: str):
 
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", radio)
     time.sleep(0.5)
-
     driver.execute_script("arguments[0].click();", radio)
     time.sleep(0.5)
 
-
+# Escribe la fecha en Evolta
 def escribir_fecha(driver, nombre_campo: str, fecha: str):
     print(f"Escribiendo {nombre_campo}: {fecha}")
 
@@ -266,7 +352,6 @@ def escribir_fecha(driver, nombre_campo: str, fecha: str):
 
     campo.click()
     time.sleep(0.2)
-
     campo.send_keys(Keys.CONTROL, "a")
     campo.send_keys(Keys.BACKSPACE)
     campo.send_keys(fecha)
@@ -280,7 +365,7 @@ def escribir_fecha(driver, nombre_campo: str, fecha: str):
 
     time.sleep(1)
 
-
+# Hace clic Exportar desde Evolta
 def click_exportar(driver):
     print("Buscando botón Exportar...")
 
@@ -292,54 +377,58 @@ def click_exportar(driver):
     time.sleep(1)
 
     print("Haciendo clic en Exportar...")
-
-    try:
-        boton.click()
-    except Exception:
-        try:
-            ActionChains(driver).move_to_element(boton).pause(0.5).click().perform()
-        except Exception:
-            driver.execute_script("arguments[0].click();", boton)
-
+    click_seguro(driver, boton)
     time.sleep(3)
 
-
-# =========================================================
-# 4. CONTROL DE DESCARGAS
-# =========================================================
-
+# Configura Chrome para que descargue los archivos en la carpeta indicada
 def configurar_descargas_chrome(driver):
     ruta_descarga = str(DOWNLOADS_DIR.resolve())
+    parametros = {
+        "behavior": "allow",
+        "downloadPath": ruta_descarga,
+    }
 
     try:
-        driver.execute_cdp_cmd(
-            "Browser.setDownloadBehavior",
-            {
-                "behavior": "allow",
-                "downloadPath": ruta_descarga
-            }
-        )
+        driver.execute_cdp_cmd("Browser.setDownloadBehavior", parametros)
     except Exception:
-        driver.execute_cdp_cmd(
-            "Page.setDownloadBehavior",
-            {
-                "behavior": "allow",
-                "downloadPath": ruta_descarga
-            }
-        )
+        driver.execute_cdp_cmd("Page.setDownloadBehavior", parametros)
 
 
+def crear_driver_chrome():
+    chrome_options = Options()
+    chrome_options.add_argument("--start-maximized")
+
+    prefs = {
+        "download.default_directory": str(DOWNLOADS_DIR.resolve()),
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True,
+        "profile.default_content_settings.popups": 0,
+        "profile.default_content_setting_values.automatic_downloads": 1,
+    }
+
+    chrome_options.add_experimental_option("prefs", prefs)
+
+    driver = webdriver.Chrome(options=chrome_options)
+    configurar_descargas_chrome(driver)
+
+    return driver
+
+
+# =========================================================
+# 4. DESCARGAS
+# =========================================================
+
+# Lee que archivos existen en la carpeta Descargas antes de descargar.
 def obtener_archivos_downloads():
-    extensiones = [".csv", ".xlsx", ".xls"]
-
     return {
         archivo.name
         for archivo in DOWNLOADS_DIR.iterdir()
         if archivo.is_file()
-        and archivo.suffix.lower() in extensiones
+        and archivo.suffix.lower() in EXTENSIONES_DESCARGA
     }
 
-
+# Espera que la descarga termine
 def esperar_nueva_descarga_downloads(archivos_antes, tiempo_inicio, timeout=180):
     print("⌛ Esperando archivo nuevo en Descargas...")
 
@@ -347,14 +436,12 @@ def esperar_nueva_descarga_downloads(archivos_antes, tiempo_inicio, timeout=180)
     ultimo_aviso = time.time()
 
     while time.time() < tiempo_limite:
-        temporales_recientes = []
-
-        for temporal in DOWNLOADS_DIR.glob("*.crdownload"):
-            try:
-                if temporal.stat().st_mtime >= tiempo_inicio - 2:
-                    temporales_recientes.append(temporal)
-            except Exception:
-                pass
+        temporales_recientes = [
+            temporal
+            for temporal in DOWNLOADS_DIR.glob("*.crdownload")
+            if temporal.exists()
+            and temporal.stat().st_mtime >= tiempo_inicio - 2
+        ]
 
         if temporales_recientes:
             time.sleep(1)
@@ -363,10 +450,7 @@ def esperar_nueva_descarga_downloads(archivos_antes, tiempo_inicio, timeout=180)
         candidatos = []
 
         for archivo in DOWNLOADS_DIR.iterdir():
-            if not archivo.is_file():
-                continue
-
-            if archivo.suffix.lower() not in [".csv", ".xlsx", ".xls"]:
+            if not archivo.is_file() or archivo.suffix.lower() not in EXTENSIONES_DESCARGA:
                 continue
 
             try:
@@ -387,8 +471,6 @@ def esperar_nueva_descarga_downloads(archivos_antes, tiempo_inicio, timeout=180)
                 tamaño_2 = archivo_nuevo.stat().st_size
 
                 if tamaño_1 == tamaño_2 and tamaño_2 > 0:
-                    print("Archivo detectado en Descargas:")
-                    print(archivo_nuevo.name)
                     return archivo_nuevo
             except Exception:
                 pass
@@ -399,34 +481,47 @@ def esperar_nueva_descarga_downloads(archivos_antes, tiempo_inicio, timeout=180)
 
         time.sleep(1)
 
-    raise TimeoutError(
-        "No se detectó ningún archivo nuevo en Descargas. "
-    )
+    raise TimeoutError("No se detectó ningún archivo nuevo en Descargas.")
 
+# Borra archivos anteriores del mismo año antes de descargar
+def limpiar_archivos_previos_anio(anio: int):
+    if not OVERWRITE_EXISTING:
+        return
 
+    for carpeta in [DOWNLOADS_DIR, ENTRADA_COBRANZAS]:
+        for extension in EXTENSIONES_DESCARGA:
+            archivo = carpeta / f"Cobranzas_{anio}{extension}"
+
+            if archivo.exists():
+                try:
+                    archivo.unlink()
+                except Exception:
+                    pass
+
+# Renombra a los archivos descargados
 def renombrar_en_downloads(archivo_descargado: Path, anio: int):
     extension = archivo_descargado.suffix.lower()
 
-    if extension not in [".csv", ".xlsx", ".xls"]:
+    if extension not in EXTENSIONES_DESCARGA:
         raise ValueError(f"Extensión no esperada: {extension}")
 
-    nuevo_nombre_downloads = DOWNLOADS_DIR / f"Cobranzas_{anio}{extension}"
+    destino = DOWNLOADS_DIR / f"Cobranzas_{anio}{extension}"
 
-    if nuevo_nombre_downloads.exists() and OVERWRITE_EXISTING:
-        nuevo_nombre_downloads.unlink()
+    if destino.exists() and OVERWRITE_EXISTING:
+        destino.unlink()
 
-    if nuevo_nombre_downloads.exists() and not OVERWRITE_EXISTING:
+    if destino.exists() and not OVERWRITE_EXISTING:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        nuevo_nombre_downloads = DOWNLOADS_DIR / f"Cobranzas_{anio}_{timestamp}{extension}"
+        destino = DOWNLOADS_DIR / f"Cobranzas_{anio}_{timestamp}{extension}"
 
-    archivo_descargado.rename(nuevo_nombre_downloads)
+    archivo_descargado.rename(destino)
 
-    if not nuevo_nombre_downloads.exists():
-        raise FileNotFoundError(f"No se renombró correctamente en Descargas: {nuevo_nombre_downloads}")
+    if not destino.exists():
+        raise FileNotFoundError(f"No se renombró correctamente en Descargas: {destino}")
 
-    return nuevo_nombre_downloads
+    return destino
 
-
+# Copia el archivo de Descargas hacia la carpeta del proyecto
 def copiar_renombrado_a_cobranzas(archivo_renombrado: Path):
     destino = ENTRADA_COBRANZAS / archivo_renombrado.name
 
@@ -448,35 +543,100 @@ def copiar_renombrado_a_cobranzas(archivo_renombrado: Path):
 
     return destino
 
+# Descarga un año en especifico desde Evolta
+def descargar_rango(driver, anio, fecha_inicio, fecha_fin):
+    ultimo_error = None
 
-# =========================================================
-# 5. CONVERSIÓN CSV A EXCEL
-# =========================================================
+    for intento in range(1, INTENTOS_DESCARGA + 1):
+        print(f"Intento de descarga {intento} de {INTENTOS_DESCARGA}")
 
-def leer_csv_seguro(ruta_csv: Path) -> pd.DataFrame:
-    codificaciones = ["utf-8-sig", "utf-8", "latin1", "cp1252"]
-
-    for encoding in codificaciones:
         try:
-            df = pd.read_csv(
+            archivos_antes = obtener_archivos_downloads()
+
+            seleccionar_formato(driver, FORMATO_EVOLTA)
+            escribir_fecha(driver, "Fecha de inicio", fecha_inicio)
+            escribir_fecha(driver, "Fecha de fin", fecha_fin)
+
+            tiempo_inicio_descarga = time.time()
+            click_exportar(driver)
+
+            return esperar_nueva_descarga_downloads(
+                archivos_antes=archivos_antes,
+                tiempo_inicio=tiempo_inicio_descarga,
+                timeout=TIEMPO_ESPERA_DESCARGA,
+            )
+
+        except Exception as e:
+            ultimo_error = e
+            print(f"No se detectó descarga en el intento {intento}.")
+            print(e)
+
+            if intento < INTENTOS_DESCARGA:
+                print("Recargando página de reporte para intentar nuevamente...")
+                ir_a_reporte_cobranzas(driver)
+                time.sleep(2)
+
+    raise ultimo_error
+
+
+def procesar_descarga_anual(driver, rango):
+    anio = rango["anio"]
+    fecha_inicio = rango["fecha_inicio"]
+    fecha_fin = rango["fecha_fin"]
+
+    print("\n====================================")
+    print(f"PROCESANDO AÑO {anio}")
+    print(f"Fecha inicio: {fecha_inicio}")
+    print(f"Fecha fin: {fecha_fin}")
+    print("====================================")
+
+    limpiar_archivos_previos_anio(anio)
+
+    archivo_descargado = descargar_rango(
+        driver=driver,
+        anio=anio,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+    )
+
+    archivo_renombrado = renombrar_en_downloads(
+        archivo_descargado=archivo_descargado,
+        anio=anio,
+    )
+
+    archivo_final = copiar_renombrado_a_cobranzas(archivo_renombrado)
+
+    if CONVERTIR_CSV_A_EXCEL and archivo_final.suffix.lower() == ".csv":
+        convertir_csv_a_excel_seguro(archivo_final)
+
+    print(f"Año {anio} descargado correctamente.")
+
+    return archivo_final
+
+
+# =========================================================
+# 5. LECTURA, CONVERSIÓN Y CONSOLIDACIÓN
+# =========================================================
+
+# Lee el CSV de forma segura
+def leer_csv_seguro(ruta_csv: Path) -> pd.DataFrame:
+    for encoding in ["utf-8-sig", "utf-8", "latin1", "cp1252"]:
+        try:
+            return pd.read_csv(
                 ruta_csv,
                 sep=SEPARADOR_CSV,
                 dtype=str,
                 encoding=encoding,
-                keep_default_na=False
+                keep_default_na=False,
             )
-
-            return df
-
         except Exception:
             continue
 
     raise ValueError(f"No se pudo leer el CSV: {ruta_csv}")
 
-
+# Convierte CSV a Excel
 def convertir_csv_a_excel_seguro(ruta_csv: Path):
     df = leer_csv_seguro(ruta_csv)
-
     ruta_excel = ruta_csv.with_suffix(".xlsx")
 
     if ruta_excel.exists() and OVERWRITE_EXISTING:
@@ -484,7 +644,6 @@ def convertir_csv_a_excel_seguro(ruta_csv: Path):
 
     with pd.ExcelWriter(ruta_excel, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Base_CSV", index=False)
-
         ws = writer.book["Base_CSV"]
 
         for row in ws.iter_rows():
@@ -495,55 +654,7 @@ def convertir_csv_a_excel_seguro(ruta_csv: Path):
 
     return ruta_excel
 
-
-# =========================================================
-# 6. LIMPIEZA DE ARCHIVOS PREVIOS
-# =========================================================
-
-def limpiar_archivos_previos_anio(anio: int):
-    if not OVERWRITE_EXISTING:
-        return
-
-    posibles = [
-        DOWNLOADS_DIR / f"Cobranzas_{anio}.csv",
-        DOWNLOADS_DIR / f"Cobranzas_{anio}.xlsx",
-        DOWNLOADS_DIR / f"Cobranzas_{anio}.xls",
-        ENTRADA_COBRANZAS / f"Cobranzas_{anio}.csv",
-        ENTRADA_COBRANZAS / f"Cobranzas_{anio}.xlsx",
-        ENTRADA_COBRANZAS / f"Cobranzas_{anio}.xls",
-    ]
-
-    for archivo in posibles:
-        if archivo.exists():
-            try:
-                archivo.unlink()
-            except Exception:
-                pass
-
-
-
-
-# =========================================================
-# 7. CONSOLIDACIÓN DE BASE DE COBRANZAS
-# =========================================================
-
-def normalizar_texto(texto):
-    texto = str(texto).strip().upper()
-    texto = unicodedata.normalize("NFKD", texto)
-    texto = "".join(
-        caracter for caracter in texto
-        if not unicodedata.combining(caracter)
-    )
-    return texto
-
-
-def obtener_anio_archivo(nombre_archivo):
-    coincidencia = re.search(r"(20\d{2})", nombre_archivo)
-    if coincidencia:
-        return coincidencia.group(1)
-    return ""
-
-
+# Lee un archivo de cobranzas
 def leer_archivo_cobranzas(ruta_archivo: Path) -> pd.DataFrame:
     if ruta_archivo.suffix.lower() == ".csv":
         return leer_csv_seguro(ruta_archivo)
@@ -552,14 +663,13 @@ def leer_archivo_cobranzas(ruta_archivo: Path) -> pd.DataFrame:
         return pd.read_excel(
             ruta_archivo,
             dtype=str,
-            keep_default_na=False
+            keep_default_na=False,
         )
 
     raise ValueError(f"Formato no permitido para consolidar: {ruta_archivo}")
 
-
+# Busca los archivos que se van a consolidar
 def obtener_archivos_para_consolidar():
-    # Si existen CSV, se consolidan los CSV para no duplicar con los XLSX convertidos.
     archivos_csv = sorted(ENTRADA_COBRANZAS.glob("Cobranzas_*.csv"))
 
     if archivos_csv:
@@ -574,7 +684,7 @@ def obtener_archivos_para_consolidar():
         f"❌ No se encontraron archivos Cobranzas_*.csv ni Cobranzas_*.xlsx en: {ENTRADA_COBRANZAS}"
     )
 
-
+# Revisa todos los archivs y arma una lista con todas las columnas existentes
 def obtener_columnas_union(archivos_cobranzas):
     columnas_union = []
     columnas_vistas = set()
@@ -582,14 +692,14 @@ def obtener_columnas_union(archivos_cobranzas):
     for archivo in archivos_cobranzas:
         df = leer_archivo_cobranzas(archivo)
 
-        for columna in list(df.columns):
+        for columna in df.columns:
             if columna not in columnas_vistas:
                 columnas_union.append(columna)
                 columnas_vistas.add(columna)
 
     return columnas_union
 
-
+# Ordena las columnas de la base final
 def ordenar_columnas_cobranzas(columnas_union):
     campos_inmueble = [
         "Tipo_Construccion",
@@ -597,14 +707,14 @@ def ordenar_columnas_cobranzas(columnas_union):
         "TipoInmueble",
         "NroInmueble",
         "PrecioLista",
-        "PrecioVenta"
+        "PrecioVenta",
     ]
 
     columnas_auxiliares = [
         "Archivo_Origen",
         "Anio_Descarga",
         "Fecha_Inicio_Reporte",
-        "Fecha_Fin_Reporte"
+        "Fecha_Fin_Reporte",
     ]
 
     indices = set()
@@ -612,26 +722,24 @@ def ordenar_columnas_cobranzas(columnas_union):
 
     for columna in columnas_union:
         for campo in campos_inmueble:
-            patron = rf"^{campo}_(\d+)$"
-            coincidencia = re.match(patron, columna)
+            coincidencia = re.match(rf"^{campo}_(\d+)$", str(columna))
 
             if coincidencia:
-                indice = int(coincidencia.group(1))
-                indices.add(indice)
+                indices.add(int(coincidencia.group(1)))
                 columnas_a_reordenar.add(columna)
 
-    columnas_inmueble_ordenadas = []
+    columnas_inmueble = []
 
     for indice in sorted(indices):
         for campo in campos_inmueble:
             columna = f"{campo}_{indice}"
 
             if columna in columnas_union:
-                columnas_inmueble_ordenadas.append(columna)
+                columnas_inmueble.append(columna)
 
     if "Nombres_Titular" in columnas_union:
         columnas_a_reordenar.add("Nombres_Titular")
-        columnas_inmueble_ordenadas.append("Nombres_Titular")
+        columnas_inmueble.append("Nombres_Titular")
 
     posiciones = [
         i
@@ -649,7 +757,7 @@ def ordenar_columnas_cobranzas(columnas_union):
 
     columnas_reordenadas = (
         columnas_sin_bloque[:posicion_insertar]
-        + columnas_inmueble_ordenadas
+        + columnas_inmueble
         + columnas_sin_bloque[posicion_insertar:]
     )
 
@@ -659,89 +767,50 @@ def ordenar_columnas_cobranzas(columnas_union):
         if columna not in columnas_auxiliares
     ]
 
-    columnas_finales = columnas_finales + columnas_auxiliares
-
-    return columnas_finales
+    return columnas_finales + columnas_auxiliares
 
 
-def convertir_columna_numero(serie):
-    serie = serie.astype(str).str.strip()
+def agregar_columnas_auxiliares(df, archivo, columnas_finales):
+    df = df.copy()
+    anio_archivo = obtener_anio_archivo(archivo.name)
 
-    serie = serie.str.replace("S/", "", regex=False)
-    serie = serie.str.replace("US$", "", regex=False)
-    serie = serie.str.replace("$", "", regex=False)
-    serie = serie.str.replace(" ", "", regex=False)
-    serie = serie.str.replace(",", "", regex=False)
+    df["Archivo_Origen"] = archivo.name
+    df["Anio_Descarga"] = anio_archivo
+    df["Fecha_Inicio_Reporte"] = FECHA_INICIO_REPORTE
+    df["Fecha_Fin_Reporte"] = FECHA_FIN_REPORTE
 
-    serie = serie.replace("", pd.NA)
+    for columna in columnas_finales:
+        if columna not in df.columns:
+            df[columna] = ""
 
-    return pd.to_numeric(serie, errors="coerce")
-
-
-def es_columna_numero(columna):
-    if columna in COLUMNAS_NUMERO_FIJAS:
-        return True
-
-    for campo in COLUMNAS_NUMERO_CON_INDICE:
-        patron = rf"^{campo}_(\d+)$"
-
-        if re.match(patron, columna):
-            return True
-
-    return False
+    return df[columnas_finales]
 
 
-def convertir_tipos_base(base):
-    for columna in COLUMNAS_FECHA:
-        if columna in base.columns:
-            base[columna] = pd.to_datetime(
-                base[columna],
-                errors="coerce",
-                dayfirst=True
-            )
-
-    for columna in base.columns:
-        if es_columna_numero(columna):
-            base[columna] = convertir_columna_numero(base[columna])
-
-    return base
-
-
-def aplicar_formatos_base_consolidada(ruta_excel):
-    from openpyxl import load_workbook
-
-    wb = load_workbook(ruta_excel)
-    ws = wb[NOMBRE_HOJA_BASE]
-
-    encabezados = {}
-    for celda in ws[1]:
-        encabezados[celda.value] = celda.column
+def formatear_hoja_base(ws):
+    encabezados = {
+        celda.value: celda.column
+        for celda in ws[1]
+    }
 
     for columna in COLUMNAS_FECHA:
         if columna in encabezados:
             col_idx = encabezados[columna]
+
             for fila in range(2, ws.max_row + 1):
                 ws.cell(row=fila, column=col_idx).number_format = "dd/mm/yyyy"
 
-    for columna in encabezados:
+    for columna, col_idx in encabezados.items():
         if es_columna_numero(columna):
-            col_idx = encabezados[columna]
             for fila in range(2, ws.max_row + 1):
                 ws.cell(row=fila, column=col_idx).number_format = "#,##0.00"
 
     ws.freeze_panes = "A2"
 
-    wb.save(ruta_excel)
-
-
+# Funcion principal del proceso, arma la base de datos
 def generar_base_cobranzas_consolidada():
-    """
-    Genera la base consolidada original sin ajustes.
-    """
     archivos_cobranzas = obtener_archivos_para_consolidar()
 
     print("\n✅ Archivos que se van a consolidar:")
-
     for archivo in archivos_cobranzas:
         print("-", archivo.name)
 
@@ -752,28 +821,12 @@ def generar_base_cobranzas_consolidada():
 
     for archivo in archivos_cobranzas:
         df = leer_archivo_cobranzas(archivo)
-        anio_archivo = obtener_anio_archivo(archivo.name)
-
-        df["Archivo_Origen"] = archivo.name
-        df["Anio_Descarga"] = anio_archivo
-        df["Fecha_Inicio_Reporte"] = FECHA_INICIO_REPORTE
-        df["Fecha_Fin_Reporte"] = FECHA_FIN_REPORTE
-
-        for columna in columnas_finales:
-            if columna not in df.columns:
-                df[columna] = ""
-
-        df = df[columnas_finales]
+        df = agregar_columnas_auxiliares(df, archivo, columnas_finales)
         bases.append(df)
 
         print(f"{archivo.name}: {len(df)} filas, {len(df.columns)} columnas")
 
     base_consolidada = pd.concat(bases, ignore_index=True)
-
-    for columna in columnas_finales:
-        if columna not in base_consolidada.columns:
-            base_consolidada[columna] = ""
-
     base_consolidada = base_consolidada[columnas_finales]
     base_consolidada = convertir_tipos_base(base_consolidada)
 
@@ -783,10 +836,10 @@ def generar_base_cobranzas_consolidada():
         base_consolidada.to_excel(
             writer,
             sheet_name=NOMBRE_HOJA_BASE,
-            index=False
+            index=False,
         )
 
-    aplicar_formatos_base_consolidada(ruta_base)
+        formatear_hoja_base(writer.book[NOMBRE_HOJA_BASE])
 
     print("\n✅ Base consolidada original generada correctamente:")
     print(ruta_base.resolve())
@@ -794,13 +847,12 @@ def generar_base_cobranzas_consolidada():
     return ruta_base
 
 
+# =========================================================
+# 6. AJUSTES DE BASE
+# =========================================================
 
+# Busca que columna usar para identificar al cliente cuando se ajustan saldos negativos
 def obtener_columna_cliente_ajuste(base):
-    """
-    Define la columna de cliente para aplicar los anticipos.
-    Se prioriza NroDocumento porque identifica mejor al cliente.
-    Si no existe, se usa Nombres_Titular.
-    """
     if "NroDocumento" in base.columns:
         return "NroDocumento"
 
@@ -812,12 +864,8 @@ def obtener_columna_cliente_ajuste(base):
         "(NroDocumento o Nombres_Titular)."
     )
 
-
+# Busca q columna usar para identificar la unidad inmobiliaria
 def obtener_columna_departamento_ajuste(base):
-    """
-    Define la columna de departamento/unidad para aplicar los anticipos.
-    En la base de Evolta, el departamento principal está en NroInmueble_1.
-    """
     if "NroInmueble_1" in base.columns:
         return "NroInmueble_1"
 
@@ -829,157 +877,108 @@ def obtener_columna_departamento_ajuste(base):
         "(NroInmueble_1 o NroInmueble)."
     )
 
-
-
-def obtener_fecha_cierre_ajuste():
-    """
-    Lee FECHA_CORTE_REPORTE desde Conexiones/connection.py.
-    """
-    if FECHA_CORTE_REPORTE is None or str(FECHA_CORTE_REPORTE).strip() == "":
-        return None
-
-    fecha_cierre = pd.to_datetime(
-        FECHA_CORTE_REPORTE,
-        errors="coerce",
-        dayfirst=True
-    )
-
-    if pd.isna(fecha_cierre):
-        raise ValueError(
-            "FECHA_CORTE_REPORTE no tiene un formato válido. "
-            "Usa un formato como '30/06/2026'."
-        )
-
-    return fecha_cierre.normalize()
-
-
+# Cambia el estado de las cuotas según la fecha de corte
 def reclasificar_estado_por_fecha_cierre(base, fecha_cierre):
-    """
-    Clasifica el estado según la fecha de cierre solo para filas con saldo.
-
-    Regla:
-    - Si SaldoPorPagarCuota > 0 y Fecha_Programada <= fecha de cierre: VENCIDO.
-    - Si SaldoPorPagarCuota > 0 y Fecha_Programada > fecha de cierre: PENDIENTE.
-
-    No modifica Monto_Cuota_Pagado.
-    """
     base_estado = base.copy()
 
     if fecha_cierre is None:
         return base_estado, 0, 0
 
-    columnas_necesarias = [
-        "Estado",
-        "Fecha_Programada",
-        "SaldoPorPagarCuota",
-    ]
-
-    for columna in columnas_necesarias:
-        if columna not in base_estado.columns:
-            raise ValueError(f"No existe la columna requerida para reclasificar estados: {columna}")
+    validar_columnas(
+        base_estado,
+        ["Estado", "Fecha_Programada", "SaldoPorPagarCuota"],
+        "reclasificar estados",
+    )
 
     base_estado["Fecha_Programada"] = pd.to_datetime(
         base_estado["Fecha_Programada"],
         errors="coerce",
-        dayfirst=True
+        dayfirst=True,
     )
 
     base_estado["SaldoPorPagarCuota"] = pd.to_numeric(
         base_estado["SaldoPorPagarCuota"],
-        errors="coerce"
+        errors="coerce",
     ).fillna(0)
 
     condicion_con_saldo = (
         (base_estado["SaldoPorPagarCuota"] > 0)
-        & (base_estado["Fecha_Programada"].notna())
+        & base_estado["Fecha_Programada"].notna()
     )
 
     condicion_vencido = condicion_con_saldo & (base_estado["Fecha_Programada"] <= fecha_cierre)
     condicion_pendiente = condicion_con_saldo & (base_estado["Fecha_Programada"] > fecha_cierre)
 
-    cantidad_vencidos = int(condicion_vencido.sum())
-    cantidad_pendientes = int(condicion_pendiente.sum())
-
     base_estado.loc[condicion_vencido, "Estado"] = "VENCIDO"
     base_estado.loc[condicion_pendiente, "Estado"] = "PENDIENTE"
 
-    return base_estado, cantidad_vencidos, cantidad_pendientes
+    return base_estado, int(condicion_vencido.sum()), int(condicion_pendiente.sum())
 
-
+# Aplica la logica del cierre mensual 
 def aplicar_fecha_cierre_base_ajustada(base):
-    """
-    Aplica la fecha de cierre en Base_Cobranzas_Ajustado.xlsx.
-    """
     fecha_cierre = obtener_fecha_cierre_ajuste()
 
     if fecha_cierre is None:
         print("ℹ️ No se aplicó fecha de cierre porque FECHA_CORTE_REPORTE está vacío.")
         return base.copy()
 
-    columnas_necesarias = [
-        "Estado",
-        "Fecha_Programada",
-        "FechaPago",
-        "Monto_Cuota_Pagado",
-        "SaldoPorPagarCuota",
-    ]
-
-    for columna in columnas_necesarias:
-        if columna not in base.columns:
-            raise ValueError(f"No existe la columna requerida para aplicar fecha de cierre: {columna}")
+    validar_columnas(
+        base,
+        [
+            "Estado",
+            "Fecha_Programada",
+            "FechaPago",
+            "Monto_Cuota_Pagado",
+            "SaldoPorPagarCuota",
+        ],
+        "aplicar fecha de cierre",
+    )
 
     base_cierre = base.copy()
 
-    base_cierre["Fecha_Programada"] = pd.to_datetime(
-        base_cierre["Fecha_Programada"],
-        errors="coerce",
-        dayfirst=True
-    )
+    for columna in ["Fecha_Programada", "FechaPago"]:
+        base_cierre[columna] = pd.to_datetime(
+            base_cierre[columna],
+            errors="coerce",
+            dayfirst=True,
+        )
 
-    base_cierre["FechaPago"] = pd.to_datetime(
-        base_cierre["FechaPago"],
-        errors="coerce",
-        dayfirst=True
-    )
-
-    base_cierre["Monto_Cuota_Pagado"] = pd.to_numeric(
-        base_cierre["Monto_Cuota_Pagado"],
-        errors="coerce"
-    ).fillna(0)
-
-    base_cierre["SaldoPorPagarCuota"] = pd.to_numeric(
-        base_cierre["SaldoPorPagarCuota"],
-        errors="coerce"
-    ).fillna(0)
+    for columna in ["Monto_Cuota_Pagado", "SaldoPorPagarCuota"]:
+        base_cierre[columna] = pd.to_numeric(
+            base_cierre[columna],
+            errors="coerce",
+        ).fillna(0)
 
     if "Monto_Cuota" in base_cierre.columns:
         base_cierre["Monto_Cuota"] = pd.to_numeric(
             base_cierre["Monto_Cuota"],
-            errors="coerce"
+            errors="coerce",
         ).fillna(0)
 
-    condicion_pago_posterior_cierre = (
-        (base_cierre["FechaPago"].notna())
+    condicion_pago_posterior = (
+        base_cierre["FechaPago"].notna()
         & (base_cierre["FechaPago"] > fecha_cierre)
         & (base_cierre["Monto_Cuota_Pagado"] != 0)
     )
 
-    cantidad_pagos_posteriores = int(condicion_pago_posterior_cierre.sum())
+    cantidad_pagos_posteriores = int(condicion_pago_posterior.sum())
 
     if cantidad_pagos_posteriores > 0:
         if "Monto_Cuota" in base_cierre.columns:
             saldo_restaurado = base_cierre["Monto_Cuota"].copy().fillna(0)
-            # Si la fila tiene cuota programada cero, no se crea deuda artificial.
             saldo_restaurado = saldo_restaurado.mask(saldo_restaurado < 0, 0)
         else:
             saldo_restaurado = base_cierre["SaldoPorPagarCuota"].copy().fillna(0)
 
-        base_cierre.loc[condicion_pago_posterior_cierre, "Monto_Cuota_Pagado"] = 0
-        base_cierre.loc[condicion_pago_posterior_cierre, "SaldoPorPagarCuota"] = saldo_restaurado.loc[condicion_pago_posterior_cierre]
+        base_cierre.loc[condicion_pago_posterior, "Monto_Cuota_Pagado"] = 0
+        base_cierre.loc[
+            condicion_pago_posterior,
+            "SaldoPorPagarCuota",
+        ] = saldo_restaurado.loc[condicion_pago_posterior]
 
     base_cierre, cantidad_vencidos, cantidad_pendientes = reclasificar_estado_por_fecha_cierre(
         base_cierre,
-        fecha_cierre
+        fecha_cierre,
     )
 
     print("\n====================================")
@@ -992,63 +991,53 @@ def aplicar_fecha_cierre_base_ajustada(base):
 
     return base_cierre
 
+# Reestructura los saldos negativos
 def aplicar_ajuste_saldos_negativos(base):
-    """
-    Reestructura saldos negativos para el reporte SIN cambiar la recaudación.
-    """
-    columnas_necesarias = [
-        "Proyecto",
-        "Fecha_Programada",
-        "SaldoPorPagarCuota",
-        "Monto_Cuota_Pagado",
-    ]
-
-    for columna in columnas_necesarias:
-        if columna not in base.columns:
-            raise ValueError(f"No existe la columna requerida para el ajuste: {columna}")
+    validar_columnas(
+        base,
+        ["Proyecto", "Fecha_Programada", "SaldoPorPagarCuota", "Monto_Cuota_Pagado"],
+        "ajuste de saldos negativos",
+    )
 
     columna_cliente = obtener_columna_cliente_ajuste(base)
     columna_departamento = obtener_columna_departamento_ajuste(base)
 
     base_ajustada = base.copy()
 
-    # Asegura tipos correctos para el cálculo.
     base_ajustada["Fecha_Programada"] = pd.to_datetime(
         base_ajustada["Fecha_Programada"],
         errors="coerce",
-        dayfirst=True
+        dayfirst=True,
     )
 
     base_ajustada["SaldoPorPagarCuota"] = pd.to_numeric(
         base_ajustada["SaldoPorPagarCuota"],
-        errors="coerce"
+        errors="coerce",
     ).fillna(0)
 
     base_ajustada["_Orden_Original_Ajuste"] = range(len(base_ajustada))
 
-    columnas_grupo = [
-        "Proyecto",
-        columna_cliente,
-        columna_departamento,
-    ]
+    columnas_grupo = ["Proyecto", columna_cliente, columna_departamento]
 
     total_negativos = int((base_ajustada["SaldoPorPagarCuota"] < 0).sum())
     negativos_aplicados = 0
     monto_reestructurado = 0.0
 
-    # Solo se ajustan filas que tienen la llave completa.
     llave_completa = base_ajustada[columnas_grupo].notna().all(axis=1)
+
     for columna in columnas_grupo:
-        llave_completa = llave_completa & (base_ajustada[columna].astype(str).str.strip() != "")
+        llave_completa &= base_ajustada[columna].astype(str).str.strip() != ""
 
-    indices_validos = base_ajustada[llave_completa].index
-
-    grupos = base_ajustada.loc[indices_validos].groupby(columnas_grupo, dropna=False, sort=False)
+    grupos = base_ajustada.loc[llave_completa].groupby(
+        columnas_grupo,
+        dropna=False,
+        sort=False,
+    )
 
     for _, grupo in grupos:
         grupo_ordenado = grupo.sort_values(
             by=["Fecha_Programada", "_Orden_Original_Ajuste"],
-            ascending=[True, True]
+            ascending=[True, True],
         )
 
         indices_grupo = list(grupo_ordenado.index)
@@ -1062,7 +1051,6 @@ def aplicar_ajuste_saldos_negativos(base):
             credito_pendiente = abs(saldo_negativo)
             credito_inicial = credito_pendiente
 
-            # Buscar cuotas posteriores del mismo cliente/departamento/proyecto.
             for idx_destino in indices_grupo[posicion + 1:]:
                 if credito_pendiente <= 0:
                     break
@@ -1078,14 +1066,12 @@ def aplicar_ajuste_saldos_negativos(base):
                 credito_pendiente -= monto_a_aplicar
                 monto_reestructurado += monto_a_aplicar
 
-            # Si el crédito se aplicó completo, la fila negativa queda en cero.
-            # Si no se encontró saldo futuro suficiente, se conserva el remanente negativo
-            # para no perder el cuadre total de la base.
             if credito_pendiente <= 0:
                 base_ajustada.at[idx_negativo, "SaldoPorPagarCuota"] = 0
                 negativos_aplicados += 1
             else:
                 base_ajustada.at[idx_negativo, "SaldoPorPagarCuota"] = -credito_pendiente
+
                 if credito_pendiente < credito_inicial:
                     negativos_aplicados += 1
 
@@ -1097,46 +1083,31 @@ def aplicar_ajuste_saldos_negativos(base):
     print(f"Saldos negativos encontrados: {total_negativos}")
     print(f"Filas negativas reestructuradas total/parcial: {negativos_aplicados}")
     print(f"Monto aplicado a cuotas futuras: {monto_reestructurado:,.2f}")
-    print("Regla: mismo proyecto, mismo cliente, mismo departamento y orden por Fecha_Programada.")
 
     return base_ajustada
 
-
-
+# Marca cuotas parciales pagadas
 def aplicar_estado_parcial_cancelado(base):
-    """
-    Marca cuotas parcialmente pagadas en Base_Ajustada.
-    """
     fecha_cierre = obtener_fecha_cierre_ajuste()
-
     base_parcial = base.copy()
 
-    columnas_necesarias = [
-        "Estado",
-        "Fecha_Programada",
-        "Monto_Cuota_Pagado",
-        "SaldoPorPagarCuota",
-    ]
-
-    for columna in columnas_necesarias:
-        if columna not in base_parcial.columns:
-            raise ValueError(f"No existe la columna requerida para marcar parciales: {columna}")
+    validar_columnas(
+        base_parcial,
+        ["Estado", "Fecha_Programada", "Monto_Cuota_Pagado", "SaldoPorPagarCuota"],
+        "marcar parciales",
+    )
 
     base_parcial["Fecha_Programada"] = pd.to_datetime(
         base_parcial["Fecha_Programada"],
         errors="coerce",
-        dayfirst=True
+        dayfirst=True,
     )
 
-    base_parcial["Monto_Cuota_Pagado"] = pd.to_numeric(
-        base_parcial["Monto_Cuota_Pagado"],
-        errors="coerce"
-    ).fillna(0)
-
-    base_parcial["SaldoPorPagarCuota"] = pd.to_numeric(
-        base_parcial["SaldoPorPagarCuota"],
-        errors="coerce"
-    ).fillna(0)
+    for columna in ["Monto_Cuota_Pagado", "SaldoPorPagarCuota"]:
+        base_parcial[columna] = pd.to_numeric(
+            base_parcial[columna],
+            errors="coerce",
+        ).fillna(0)
 
     condicion_parcial = (
         (base_parcial["Monto_Cuota_Pagado"] > 0)
@@ -1155,7 +1126,6 @@ def aplicar_estado_parcial_cancelado(base):
             & base_parcial["Fecha_Programada"].notna()
             & (base_parcial["Fecha_Programada"] > fecha_cierre)
         )
-
     else:
         estado_actual = base_parcial["Estado"].astype(str).apply(normalizar_texto)
         condicion_vencido = condicion_parcial & estado_actual.str.contains("VENCIDO", na=False)
@@ -1170,15 +1140,11 @@ def aplicar_estado_parcial_cancelado(base):
     print("ESTADO PARCIAL CANCELADO")
     print("====================================")
     print(f"Cuotas parcialmente canceladas marcadas: {cantidad_parcial}")
-    print("Regla: Monto_Cuota_Pagado > 0 y SaldoPorPagarCuota > 0.")
 
     return base_parcial
 
-
+# Elimina venas posteriores al cierre
 def filtrar_ventas_hasta_fecha_cierre(base):
-    """
-    Filtra Base_Ajustada para el cierre mensual.
-    """
     fecha_cierre = obtener_fecha_cierre_ajuste()
 
     if fecha_cierre is None:
@@ -1196,13 +1162,10 @@ def filtrar_ventas_hasta_fecha_cierre(base):
     fecha_operacion = pd.to_datetime(
         base_filtrada["FechaOperacionComercial"],
         errors="coerce",
-        dayfirst=True
+        dayfirst=True,
     )
 
-    condicion_mantener = (
-        fecha_operacion.notna()
-        & (fecha_operacion <= fecha_cierre)
-    )
+    condicion_mantener = fecha_operacion.notna() & (fecha_operacion <= fecha_cierre)
 
     filas_antes = len(base_filtrada)
     filas_eliminadas = int((~condicion_mantener).sum())
@@ -1215,91 +1178,26 @@ def filtrar_ventas_hasta_fecha_cierre(base):
     print("FILTRO DE VENTAS POR FECHA DE CIERRE")
     print("====================================")
     print(f"Fecha de cierre: {fecha_cierre.strftime('%d/%m/%Y')}")
+    print(f"Filas antes del filtro: {filas_antes}")
+    print(f"Filas eliminadas: {filas_eliminadas}")
+    print(f"Ventas posteriores al cierre: {filas_posteriores}")
+    print(f"Filas sin FechaOperacionComercial: {filas_sin_fecha}")
+    print(f"Filas finales Base_Ajustada: {len(base_filtrada)}")
 
     return base_filtrada
 
-def aplicar_formatos_base_ajustada(ruta_excel):
-    from openpyxl import load_workbook
-
-    wb = load_workbook(ruta_excel)
-
-    for nombre_hoja in ["Base_Original", "Base_Ajustada"]:
-        if nombre_hoja not in wb.sheetnames:
-            continue
-
-        ws = wb[nombre_hoja]
-
-        encabezados = {}
-        for celda in ws[1]:
-            encabezados[celda.value] = celda.column
-
-        for columna in COLUMNAS_FECHA:
-            if columna in encabezados:
-                col_idx = encabezados[columna]
-                for fila in range(2, ws.max_row + 1):
-                    ws.cell(row=fila, column=col_idx).number_format = "dd/mm/yyyy"
-
-        for columna in encabezados:
-            if es_columna_numero(columna):
-                col_idx = encabezados[columna]
-                for fila in range(2, ws.max_row + 1):
-                    ws.cell(row=fila, column=col_idx).number_format = "#,##0.00"
-
-        ws.freeze_panes = "A2"
-
-    wb.save(ruta_excel)
-
-
+# Genera el archivo de Base cobranzas ajustado
 def generar_base_cobranzas_ajustada(base_consolidada):
-    """
-    Genera un archivo adicional en Flujo/Output:
-        Base_Cobranzas_Ajustado.xlsx
-
-    Contiene:
-        - Base_Original:
-          Base consolidada tal como queda luego de la descarga/consolidación.
-          NO se filtra por FechaOperacionComercial.
-          NO se aplica fecha de cierre.
-          NO se reclasifican estados.
-          NO se reestructuran saldos negativos.
-          Solo conserva los formatos de fecha/número al exportar.
-
-        - Base_Ajustada:
-          Base adaptada para el cierre mensual del reporte.
-          Aquí SÍ se aplican los ajustes:
-          1. Fecha de cierre.
-          2. Reclasificación VENCIDO/PENDIENTE.
-          3. Reestructuración de saldos negativos.
-          4. Estado parcial cancelado.
-          5. Filtro de FechaOperacionComercial <= FECHA_CORTE_REPORTE.
-    """
-
-    # IMPORTANTE:
-    # La base original se separa desde el inicio y no se vuelve a tocar.
-    # Los ajustes se hacen únicamente sobre base_ajustada.
     base_original = base_consolidada.copy()
     base_ajustada = base_consolidada.copy()
 
-    # 1) Fotografía al cierre del reporte.
-    #    Ejemplo: si el cierre es junio, los pagos posteriores al cierre
-    #    ya no cuentan como cobrados dentro de Base_Ajustada.
     base_ajustada = aplicar_fecha_cierre_base_ajustada(base_ajustada)
-
-    # 2) Reestructura saldos negativos contra cuotas futuras del mismo
-    #    proyecto, cliente y departamento, sin cambiar Monto_Cuota_Pagado.
     base_ajustada = aplicar_ajuste_saldos_negativos(base_ajustada)
 
-    # 3) Reclasifica el estado por fecha de cierre usando el saldo ya ajustado.
     fecha_cierre = obtener_fecha_cierre_ajuste()
     base_ajustada, _, _ = reclasificar_estado_por_fecha_cierre(base_ajustada, fecha_cierre)
 
-    # 4) Marca cuotas parcialmente canceladas sin modificar montos.
-    #    Mantiene VENCIDO/PENDIENTE dentro del Estado para que los reportes
-    #    sigan funcionando con los filtros existentes.
     base_ajustada = aplicar_estado_parcial_cancelado(base_ajustada)
-
-    # 5) Filtro final SOLO en Base_Ajustada.
-    #    Base_Original NO se filtra.
     base_ajustada = filtrar_ventas_hasta_fecha_cierre(base_ajustada)
 
     ruta_base_ajustada = SALIDA_LISTA / NOMBRE_BASE_AJUSTADA
@@ -1307,104 +1205,40 @@ def generar_base_cobranzas_ajustada(base_consolidada):
     with pd.ExcelWriter(ruta_base_ajustada, engine="openpyxl") as writer:
         base_original.to_excel(
             writer,
-            sheet_name="Base_Original",
-            index=False
+            sheet_name=NOMBRE_HOJA_BASE_ORIGINAL_AJUSTADA,
+            index=False,
         )
 
         base_ajustada.to_excel(
             writer,
-            sheet_name="Base_Ajustada",
-            index=False
+            sheet_name=NOMBRE_HOJA_BASE_AJUSTADA,
+            index=False,
         )
 
-    aplicar_formatos_base_ajustada(ruta_base_ajustada)
+        formatear_hoja_base(writer.book[NOMBRE_HOJA_BASE_ORIGINAL_AJUSTADA])
+        formatear_hoja_base(writer.book[NOMBRE_HOJA_BASE_AJUSTADA])
 
-    print("\n✅ Base ajustada generada correctamente:")
-    print(ruta_base_ajustada.resolve())
+    print("\n✅ Base ajustada generada correctamente")
 
     return ruta_base_ajustada
 
-# =========================================================
-# 8. DESCARGA POR RANGO
-# =========================================================
-
-def descargar_rango(driver, anio, fecha_inicio, fecha_fin):
-    ultimo_error = None
-
-    for intento in range(1, INTENTOS_DESCARGA + 1):
-        print(f"Intento de descarga {intento} de {INTENTOS_DESCARGA}")
-
-        try:
-            archivos_antes = obtener_archivos_downloads()
-
-            seleccionar_formato(driver, FORMATO_EVOLTA)
-
-            escribir_fecha(driver, "Fecha de inicio", fecha_inicio)
-            escribir_fecha(driver, "Fecha de fin", fecha_fin)
-
-            tiempo_inicio_descarga = time.time()
-
-            click_exportar(driver)
-
-            archivo_descargado_downloads = esperar_nueva_descarga_downloads(
-                archivos_antes=archivos_antes,
-                tiempo_inicio=tiempo_inicio_descarga,
-                timeout=TIEMPO_ESPERA_DESCARGA
-            )
-
-            return archivo_descargado_downloads
-
-        except Exception as e:
-            ultimo_error = e
-            print(f"No se detectó descarga en el intento {intento}.")
-            print(e)
-
-            if intento < INTENTOS_DESCARGA:
-                print("Recargando página de reporte para intentar nuevamente...")
-                ir_a_reporte_cobranzas(driver)
-                time.sleep(2)
-
-    raise ultimo_error
-
 
 # =========================================================
-# 9. PROGRAMA PRINCIPAL
+# 7. PROCESO PRINCIPAL
 # =========================================================
 
-def main():
-    print("====================================")
-    print("AUTOMATIZACIÓN COBRANZAS EVOLTA")
-    print("====================================")
-
-    if not DOWNLOADS_DIR.exists():
-        raise FileNotFoundError(f"No existe la carpeta de Descargas: {DOWNLOADS_DIR}")
-
-    ENTRADA_COBRANZAS.mkdir(parents=True, exist_ok=True)
-
-    rangos = generar_rangos_por_anio(FECHA_INICIO_REPORTE, FECHA_FIN_REPORTE)
-
+def mostrar_rangos_descarga(rangos):
     print("\nRangos que se van a descargar:")
 
     for r in rangos:
         print(f"{r['anio']}: {r['fecha_inicio']} al {r['fecha_fin']}")
 
-    chrome_options = Options()
-    chrome_options.add_argument("--start-maximized")
 
-    prefs = {
-        "download.default_directory": str(DOWNLOADS_DIR.resolve()),
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "safebrowsing.enabled": True,
-        "profile.default_content_settings.popups": 0,
-        "profile.default_content_setting_values.automatic_downloads": 1
-    }
+def ejecutar_descargas(rangos):
+    if not DOWNLOADS_DIR.exists():
+        raise FileNotFoundError(f"No existe la carpeta de Descargas: {DOWNLOADS_DIR}")
 
-    chrome_options.add_experimental_option("prefs", prefs)
-
-    driver = webdriver.Chrome(options=chrome_options)
-    configurar_descargas_chrome(driver)
-
+    driver = crear_driver_chrome()
     rangos_con_error = []
 
     try:
@@ -1412,59 +1246,25 @@ def main():
             iniciar_sesion_evolta(driver)
         else:
             driver.get(LOGIN_URL)
-
             input("\nInicia sesión en Evolta y luego presiona ENTER aquí... ")
-
             ir_a_reporte_cobranzas(driver)
 
-        for r in rangos:
-            anio = r["anio"]
-            fecha_inicio = r["fecha_inicio"]
-            fecha_fin = r["fecha_fin"]
-
-            print("\n====================================")
-            print(f"PROCESANDO AÑO {anio}")
-            print(f"Fecha inicio: {fecha_inicio}")
-            print(f"Fecha fin: {fecha_fin}")
-            print("====================================")
-
+        for rango in rangos:
             try:
-                limpiar_archivos_previos_anio(anio)
-
-                archivo_descargado_downloads = descargar_rango(
-                    driver=driver,
-                    anio=anio,
-                    fecha_inicio=fecha_inicio,
-                    fecha_fin=fecha_fin
-                )
-
-                archivo_renombrado_downloads = renombrar_en_downloads(
-                    archivo_descargado=archivo_descargado_downloads,
-                    anio=anio
-                )
-
-                archivo_final = copiar_renombrado_a_cobranzas(
-                    archivo_renombrado=archivo_renombrado_downloads
-                )
-
-                if CONVERTIR_CSV_A_EXCEL and archivo_final.suffix.lower() == ".csv":
-                    convertir_csv_a_excel_seguro(archivo_final)
-
-                print(f"Año {anio} descargado correctamente.")
-
+                procesar_descarga_anual(driver, rango)
                 time.sleep(2)
 
             except Exception as e:
-                print(f"No se pudo descargar el año {anio}.")
+                print(f"No se pudo descargar el año {rango['anio']}.")
                 print("Motivo:")
                 print(e)
                 print("Se continuará con el siguiente año.")
 
                 rangos_con_error.append({
-                    "anio": anio,
-                    "fecha_inicio": fecha_inicio,
-                    "fecha_fin": fecha_fin,
-                    "error": str(e)
+                    "anio": rango["anio"],
+                    "fecha_inicio": rango["fecha_inicio"],
+                    "fecha_fin": rango["fecha_fin"],
+                    "error": str(e),
                 })
 
                 try:
@@ -1474,25 +1274,44 @@ def main():
 
                 continue
 
-        print("\n====================================")
-        print("PROCESO DE DESCARGA TERMINADO")
-        print("====================================")
+    finally:
+        driver.quit()
 
-        if rangos_con_error:
-            print("\nRANGOS NO DESCARGADOS:")
+    return rangos_con_error
 
-            for error in rangos_con_error:
-                print(
-                    f"{error['anio']}: "
-                    f"{error['fecha_inicio']} al {error['fecha_fin']} - "
-                    f"{error['error']}"
-                )
 
-        else:
-            print("Todos los rangos fueron descargados correctamente.")
+def mostrar_resumen_descargas(rangos_con_error):
+    print("\n====================================")
+    print("PROCESO DE DESCARGA TERMINADO")
+    print("====================================")
 
-        print("\nArchivos guardados en:")
-        print(ENTRADA_COBRANZAS.resolve())
+    if rangos_con_error:
+        print("\nRANGOS NO DESCARGADOS:")
+
+        for error in rangos_con_error:
+            print(
+                f"{error['anio']}: "
+                f"{error['fecha_inicio']} al {error['fecha_fin']} - "
+                f"{error['error']}"
+            )
+    else:
+        print("Todos los rangos fueron descargados correctamente.")
+
+    print("\nArchivos guardados en:")
+    print(ENTRADA_COBRANZAS.resolve())
+
+# Ejecuta todo el proceso 
+def main():
+    print("====================================")
+    print("AUTOMATIZACIÓN COBRANZAS EVOLTA")
+    print("====================================")
+
+    rangos = generar_rangos_por_anio(FECHA_INICIO_REPORTE, FECHA_FIN_REPORTE)
+    mostrar_rangos_descarga(rangos)
+
+    try:
+        rangos_con_error = ejecutar_descargas(rangos)
+        mostrar_resumen_descargas(rangos_con_error)
 
         ruta_base_consolidada = generar_base_cobranzas_consolidada()
 
@@ -1502,10 +1321,10 @@ def main():
         base_consolidada = pd.read_excel(
             ruta_base_consolidada,
             sheet_name=NOMBRE_HOJA_BASE,
-            engine="openpyxl"
+            engine="openpyxl",
         )
-        base_consolidada = convertir_tipos_base(base_consolidada)
 
+        base_consolidada = convertir_tipos_base(base_consolidada)
         ruta_base_ajustada = generar_base_cobranzas_ajustada(base_consolidada)
 
         print("\nBase ajustada guardada en:")
@@ -1514,9 +1333,7 @@ def main():
     except Exception as e:
         print("\nOcurrió un error general:")
         print(e)
-
-    finally:
-        driver.quit()
+        raise
 
 
 if __name__ == "__main__":
