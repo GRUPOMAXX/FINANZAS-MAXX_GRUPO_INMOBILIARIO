@@ -901,9 +901,38 @@ def reclasificar_estado_por_fecha_cierre(base, fecha_cierre):
         errors="coerce",
     ).fillna(0)
 
+    condicion_pago_posterior_lejano = pd.Series(False, index=base_estado.index)
+
+    if "FechaPago" in base_estado.columns and "Monto_Cuota_Pagado" in base_estado.columns:
+        fecha_pago = pd.to_datetime(
+            base_estado["FechaPago"],
+            errors="coerce",
+            dayfirst=True,
+        )
+
+        monto_pagado = pd.to_numeric(
+            base_estado["Monto_Cuota_Pagado"],
+            errors="coerce",
+        ).fillna(0)
+
+        inicio_mes_siguiente = pd.Timestamp(
+            year=fecha_cierre.year,
+            month=fecha_cierre.month,
+            day=1,
+        ) + pd.DateOffset(months=1)
+
+        inicio_mes_posterior = inicio_mes_siguiente + pd.DateOffset(months=1)
+
+        condicion_pago_posterior_lejano = (
+            fecha_pago.notna()
+            & (fecha_pago >= inicio_mes_posterior)
+            & (monto_pagado != 0)
+        )
+
     condicion_con_saldo = (
         (base_estado["SaldoPorPagarCuota"] > 0)
         & base_estado["Fecha_Programada"].notna()
+        & (~condicion_pago_posterior_lejano)
     )
 
     condicion_vencido = condicion_con_saldo & (base_estado["Fecha_Programada"] <= fecha_cierre)
@@ -913,7 +942,6 @@ def reclasificar_estado_por_fecha_cierre(base, fecha_cierre):
     base_estado.loc[condicion_pendiente, "Estado"] = "PENDIENTE"
 
     return base_estado, int(condicion_vencido.sum()), int(condicion_pendiente.sum())
-
 # Aplica la logica del cierre mensual 
 def aplicar_fecha_cierre_base_ajustada(base):
     fecha_cierre = obtener_fecha_cierre_ajuste()
@@ -955,13 +983,29 @@ def aplicar_fecha_cierre_base_ajustada(base):
             errors="coerce",
         ).fillna(0)
 
-    condicion_pago_posterior = (
-        base_cierre["FechaPago"].notna()
-        & (base_cierre["FechaPago"] > fecha_cierre)
+    inicio_mes_siguiente = pd.Timestamp(
+        year=fecha_cierre.year,
+        month=fecha_cierre.month,
+        day=1,
+    ) + pd.DateOffset(months=1)
+
+    inicio_mes_posterior = inicio_mes_siguiente + pd.DateOffset(months=1)
+
+    condicion_pago_mes_siguiente = (
+        (base_cierre["FechaPago"].notna())
+        & (base_cierre["FechaPago"] >= inicio_mes_siguiente)
+        & (base_cierre["FechaPago"] < inicio_mes_posterior)
         & (base_cierre["Monto_Cuota_Pagado"] != 0)
     )
 
-    cantidad_pagos_posteriores = int(condicion_pago_posterior.sum())
+    condicion_pago_posterior_lejano = (
+        (base_cierre["FechaPago"].notna())
+        & (base_cierre["FechaPago"] >= inicio_mes_posterior)
+        & (base_cierre["Monto_Cuota_Pagado"] != 0)
+    )
+
+    cantidad_pagos_posteriores = int(condicion_pago_mes_siguiente.sum())
+    cantidad_pagos_posteriores_lejanos = int(condicion_pago_posterior_lejano.sum())
 
     if cantidad_pagos_posteriores > 0:
         if "Monto_Cuota" in base_cierre.columns:
@@ -970,11 +1014,8 @@ def aplicar_fecha_cierre_base_ajustada(base):
         else:
             saldo_restaurado = base_cierre["SaldoPorPagarCuota"].copy().fillna(0)
 
-        base_cierre.loc[condicion_pago_posterior, "Monto_Cuota_Pagado"] = 0
-        base_cierre.loc[
-            condicion_pago_posterior,
-            "SaldoPorPagarCuota",
-        ] = saldo_restaurado.loc[condicion_pago_posterior]
+        base_cierre.loc[condicion_pago_mes_siguiente, "Monto_Cuota_Pagado"] = 0
+        base_cierre.loc[condicion_pago_mes_siguiente, "SaldoPorPagarCuota"] = saldo_restaurado.loc[condicion_pago_mes_siguiente]
 
     base_cierre, cantidad_vencidos, cantidad_pendientes = reclasificar_estado_por_fecha_cierre(
         base_cierre,
@@ -985,12 +1026,12 @@ def aplicar_fecha_cierre_base_ajustada(base):
     print("AJUSTE POR FECHA DE CIERRE")
     print("====================================")
     print(f"Fecha de cierre: {fecha_cierre.strftime('%d/%m/%Y')}")
-    print(f"Pagos posteriores al cierre revertidos en Base_Ajustada: {cantidad_pagos_posteriores}")
+    print(f"Pagos del mes siguiente al cierre revertidos en Base_Ajustada: {cantidad_pagos_posteriores}")
+    print(f"Pagos posteriores lejanos conservados para revisión: {cantidad_pagos_posteriores_lejanos}")
     print(f"Filas con saldo reclasificadas como VENCIDO: {cantidad_vencidos}")
     print(f"Filas con saldo reclasificadas como PENDIENTE: {cantidad_pendientes}")
 
     return base_cierre
-
 # Reestructura los saldos negativos
 def aplicar_ajuste_saldos_negativos(base):
     validar_columnas(
@@ -1109,9 +1150,33 @@ def aplicar_estado_parcial_cancelado(base):
             errors="coerce",
         ).fillna(0)
 
+    condicion_pago_posterior_lejano = pd.Series(False, index=base_parcial.index)
+
+    if fecha_cierre is not None and "FechaPago" in base_parcial.columns:
+        fecha_pago = pd.to_datetime(
+            base_parcial["FechaPago"],
+            errors="coerce",
+            dayfirst=True,
+        )
+
+        inicio_mes_siguiente = pd.Timestamp(
+            year=fecha_cierre.year,
+            month=fecha_cierre.month,
+            day=1,
+        ) + pd.DateOffset(months=1)
+
+        inicio_mes_posterior = inicio_mes_siguiente + pd.DateOffset(months=1)
+
+        condicion_pago_posterior_lejano = (
+            fecha_pago.notna()
+            & (fecha_pago >= inicio_mes_posterior)
+            & (base_parcial["Monto_Cuota_Pagado"] != 0)
+        )
+
     condicion_parcial = (
         (base_parcial["Monto_Cuota_Pagado"] > 0)
         & (base_parcial["SaldoPorPagarCuota"] > 0)
+        & (~condicion_pago_posterior_lejano)
     )
 
     if fecha_cierre is not None:
@@ -1142,7 +1207,6 @@ def aplicar_estado_parcial_cancelado(base):
     print(f"Cuotas parcialmente canceladas marcadas: {cantidad_parcial}")
 
     return base_parcial
-
 # Elimina venas posteriores al cierre
 def filtrar_ventas_hasta_fecha_cierre(base):
     fecha_cierre = obtener_fecha_cierre_ajuste()
