@@ -1,0 +1,2318 @@
+Option Explicit
+
+Private Const HOJA_KPI As String = "KPIs indicadores"
+Private Const HOJA_KPI_FLUJO As String = "KPIs Flujo"
+Private Const HOJA_FLUJO As String = "Flujo"
+Private Const HOJA_PROYECCION As String = "Proyección"
+Private Const HOJA_VENTAS As String = "Ventas"
+Private Const HOJA_INGRESOS As String = "Ingresos"
+
+Private Const FILA_MESES_KPI As Long = 2
+Private Const COLUMNA_INICIO_KPI As Long = 8          'H
+Private Const FILA_INICIO_KPI_FLUJO As Long = 5
+Private Const COLUMNA_MES_KPI_FLUJO As Long = 11     'K
+Private Const COLUMNA_INICIO_FLUJO As Long = 12      'L
+Private Const COLUMNA_FIN_FLUJO As Long = 87         'CI
+
+Public Sub Actualizar_FC()
+
+    Dim wb As Workbook
+    Dim wsKPI As Worksheet
+    Dim wsKPIFlujo As Worksheet
+    Dim wsFlujo As Worksheet
+    Dim wsProyeccion As Worksheet
+    Dim wsVentas As Worksheet
+    Dim wsIngresos As Worksheet
+
+    Dim mesCorte As Date
+    Dim columnaMes As Long
+    Dim filaMesFlujo As Long
+
+    Dim calculoAnterior As XlCalculation
+    Dim pantallaAnterior As Boolean
+    Dim eventosAnteriores As Boolean
+    Dim alertasAnteriores As Boolean
+    Dim estadoCapturado As Boolean
+    Dim mensajeError As String
+    Dim mensajeExito As String
+
+    On Error GoTo ManejarError
+
+    pantallaAnterior = Application.ScreenUpdating
+    eventosAnteriores = Application.EnableEvents
+    alertasAnteriores = Application.DisplayAlerts
+    calculoAnterior = Application.Calculation
+    estadoCapturado = True
+
+    Set wb = ThisWorkbook
+    Set wsKPI = wb.Worksheets(HOJA_KPI)
+    Set wsKPIFlujo = wb.Worksheets(HOJA_KPI_FLUJO)
+    Set wsFlujo = wb.Worksheets(HOJA_FLUJO)
+    Set wsProyeccion = wb.Worksheets(HOJA_PROYECCION)
+    Set wsVentas = wb.Worksheets(HOJA_VENTAS)
+    Set wsIngresos = wb.Worksheets(HOJA_INGRESOS)
+
+    If Not IsDate(wsKPI.Range("E2").Value) Then
+        Err.Raise vbObjectError + 1000, "Actualizar_FC", _
+                  "La celda E2 de la hoja '" & HOJA_KPI & "' no contiene un mes válido."
+    End If
+
+    mesCorte = NormalizarMes(wsKPI.Range("E2").Value)
+
+    columnaMes = BuscarColumnaMes( _
+                    wsKPI, _
+                    FILA_MESES_KPI, _
+                    mesCorte, _
+                    COLUMNA_INICIO_KPI, _
+                    wsKPI.Cells(FILA_MESES_KPI, wsKPI.Columns.Count).End(xlToLeft).Column)
+
+    If columnaMes = 0 Then
+        Err.Raise vbObjectError + 1001, "Actualizar_FC", _
+                  "No se encontró " & Format(mesCorte, "mmmm yyyy") & _
+                  " en la fila 2 de la hoja '" & HOJA_KPI & "'."
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+    Application.Cursor = xlWait
+    Application.StatusBar = "Actualizando información de " & Format(mesCorte, "mmmm yyyy") & "..."
+
+    'Asegura que las hojas fuente estén calculadas antes de guardar la fotografía mensual.
+    Application.CalculateFull
+
+    ActualizarIndicadores wsKPI, wsFlujo, wsProyeccion, columnaMes, mesCorte
+    ActualizarGanttResumen wsKPI, columnaMes, mesCorte
+    ActualizarVentasProyectadas wsKPI, wsVentas, wsIngresos, columnaMes, mesCorte
+    ActualizarFilasSoporteGraficos wsKPI, columnaMes, mesCorte
+
+    filaMesFlujo = ActualizarHistoricoFlujo(wsKPIFlujo, wsFlujo, mesCorte)
+
+    wsKPI.Calculate
+    wsKPIFlujo.Calculate
+
+    ActualizarGraficos wsKPI, columnaMes
+
+    mensajeExito = "Actualización terminada." & vbCrLf & vbCrLf & _
+                    "Mes: " & Format(mesCorte, "mmmm yyyy") & vbCrLf & _
+                    "KPIs indicadores: columna " & LetraColumna(columnaMes) & vbCrLf & _
+                    "KPIs Flujo: fila " & filaMesFlujo
+
+Salir:
+    Application.CutCopyMode = False
+    Application.StatusBar = False
+    Application.Cursor = xlDefault
+
+    If estadoCapturado Then
+        Application.ScreenUpdating = pantallaAnterior
+        Application.EnableEvents = eventosAnteriores
+        Application.DisplayAlerts = alertasAnteriores
+        Application.Calculation = calculoAnterior
+    End If
+
+    If Len(mensajeError) > 0 Then
+        MsgBox mensajeError, vbExclamation, "No se pudo actualizar"
+    ElseIf Len(mensajeExito) > 0 Then
+        MsgBox mensajeExito, vbInformation, "Actualizar FC"
+    End If
+
+    Exit Sub
+
+ManejarError:
+    mensajeError = "Se detuvo la actualización." & vbCrLf & vbCrLf & _
+                   "Detalle: " & Err.Description
+    Resume Salir
+
+End Sub
+
+Private Sub ActualizarIndicadores( _
+    ByVal wsKPI As Worksheet, _
+    ByVal wsFlujo As Worksheet, _
+    ByVal wsProyeccion As Worksheet, _
+    ByVal columnaMes As Long, _
+    ByVal mesCorte As Date)
+
+    Dim fila As Long
+    Dim filaFuente As Long
+    Dim filaTIRDI As Long
+    Dim filaEquity As Long
+    Dim filaGastoFinanciero As Long
+    Dim filaVentas As Long
+
+    Dim filaInicioObra As Long
+    Dim filaFinObra As Long
+    Dim filaInicioDevolucion As Long
+
+    Dim clave As String
+    Dim valorFila11 As Double
+    Dim fechaFinObra As Variant
+
+    'Toma únicamente el formato del mes anterior.
+    If columnaMes > COLUMNA_INICIO_KPI Then
+
+        wsKPI.Range( _
+            wsKPI.Cells(2, columnaMes - 1), _
+            wsKPI.Cells(124, columnaMes - 1)).Copy
+
+        wsKPI.Cells(2, columnaMes).PasteSpecial Paste:=xlPasteFormats
+        Application.CutCopyMode = False
+
+    End If
+
+    wsKPI.Cells(FILA_MESES_KPI, columnaMes).Value = mesCorte
+
+    '=============================================================
+    ' P&L FINANCIERO
+    '
+    'Los valores se ubican por el nombre de cada concepto.
+    'De esta manera no importa si en otro proyecto las filas
+    'de la hoja Flujo se encuentran desplazadas.
+    '=============================================================
+    wsKPI.Cells(8, columnaMes).Value = ValorPorEtiqueta( _
+        wsFlujo, 3, 4, "Ingresos (inc. IGV)", 1, 50)
+
+    wsKPI.Cells(9, columnaMes).Value = -( _
+        ValorPorEtiqueta(wsFlujo, 3, 4, "Construcción", 1, 50) + _
+        ValorPorEtiqueta(wsFlujo, 3, 4, "Egresos indirectos", 1, 50))
+
+    wsKPI.Cells(10, columnaMes).Value = -ValorPorEtiqueta( _
+        wsFlujo, 3, 4, "Gastos Financieros", 1, 50)
+
+    wsKPI.Cells(15, columnaMes).Value = -( _
+        ValorPorEtiqueta(wsFlujo, 3, 4, "Impuestos", 1, 50) + _
+        ValorPorEtiqueta(wsFlujo, 3, 4, "IGV", 1, 50))
+
+    valorFila11 = NumeroSeguro(wsKPI.Cells(11, columnaMes).Value)
+
+    wsKPI.Cells(13, columnaMes).Value = _
+        NumeroSeguro(wsKPI.Cells(8, columnaMes).Value) + _
+        NumeroSeguro(wsKPI.Cells(9, columnaMes).Value) + _
+        NumeroSeguro(wsKPI.Cells(10, columnaMes).Value) + _
+        valorFila11
+
+    wsKPI.Cells(17, columnaMes).Value = _
+        NumeroSeguro(wsKPI.Cells(13, columnaMes).Value) + _
+        NumeroSeguro(wsKPI.Cells(15, columnaMes).Value)
+
+    '=============================================================
+    ' INDICADORES FINANCIEROS
+    '=============================================================
+    wsKPI.Cells(25, columnaMes).Value = ValorPorEtiqueta( _
+        wsFlujo, 3, 4, "TIR di")
+
+    wsKPI.Cells(26, columnaMes).Value = ValorPorEtiqueta( _
+        wsFlujo, 3, 4, "MOIC di")
+
+    wsKPI.Cells(27, columnaMes).Value = ValorPorEtiqueta( _
+        wsFlujo, 3, 4, "Margen di")
+
+    filaTIRDI = BuscarFilaTextoExacto(wsFlujo, 3, "TIR di")
+
+    filaEquity = BuscarFilaTextoHaciaArriba( _
+        wsFlujo, _
+        3, _
+        "Devolución de Utilidad", _
+        filaTIRDI - 1)
+
+    If filaEquity = 0 Then
+
+        Err.Raise vbObjectError + 1060, "ActualizarIndicadores", _
+                  "No se encontró la Devolución de Utilidad " & _
+                  "correspondiente a los indicadores después de impuestos."
+
+    End If
+
+    wsKPI.Cells(29, columnaMes).Value = _
+        NumeroSeguro(wsFlujo.Cells(filaEquity, 4).Value)
+
+    '=============================================================
+    ' EGRESOS: REAL + PROYECTADO
+    '
+    'Busca cada concepto en toda la columna D de Proyección.
+    'Los proyectos pueden tener filas distintas.
+    '=============================================================
+    For fila = 34 To 47
+
+        clave = Trim$(CStr(wsKPI.Cells(fila, 2).Value))
+
+        filaFuente = BuscarFilaTextoExacto( _
+            wsProyeccion, _
+            4, _
+            clave)
+
+        If filaFuente = 0 Then
+
+            Err.Raise vbObjectError + 1061, "ActualizarIndicadores", _
+                      "No se encontró el concepto '" & clave & _
+                      "' en la hoja '" & wsProyeccion.Name & "'."
+
+        End If
+
+        wsKPI.Cells(fila, columnaMes).Value = _
+            NumeroSeguro(wsProyeccion.Cells(filaFuente, 8).Value)
+
+    Next fila
+
+    'El total de gastos financieros se identifica por el código 3.2.
+    filaGastoFinanciero = BuscarFilaTextoExacto( _
+        wsProyeccion, _
+        3, _
+        "3.2.")
+
+    If filaGastoFinanciero = 0 Then
+
+        Err.Raise vbObjectError + 1062, "ActualizarIndicadores", _
+                  "No se encontró la sección 3.2. de gastos financieros " & _
+                  "en la hoja '" & wsProyeccion.Name & "'."
+
+    End If
+
+    wsKPI.Cells(48, columnaMes).Value = _
+        NumeroSeguro(wsProyeccion.Cells(filaGastoFinanciero, 8).Value)
+
+    wsKPI.Cells(32, columnaMes).Value = Application.Sum( _
+        wsKPI.Range( _
+            wsKPI.Cells(34, columnaMes), _
+            wsKPI.Cells(48, columnaMes)))
+
+    wsKPI.Cells(31, columnaMes).Value = WorksheetFunction.Round( _
+        NumeroSeguro(wsKPI.Cells(32, columnaMes).Value) + _
+        NumeroSeguro(wsKPI.Cells(9, columnaMes).Value) + _
+        NumeroSeguro(wsKPI.Cells(10, columnaMes).Value), _
+        2)
+
+    '=============================================================
+    ' EGRESOS CONSUMIDOS
+    '=============================================================
+    filaVentas = BuscarFilaTextoExacto( _
+        wsProyeccion, _
+        3, _
+        "VENTAS")
+
+    If filaVentas = 0 Then
+
+        Err.Raise vbObjectError + 1063, "ActualizarIndicadores", _
+                  "No se encontró la fila VENTAS en la hoja '" & _
+                  wsProyeccion.Name & "'."
+
+    End If
+
+    wsKPI.Cells(52, columnaMes).Value = _
+        NumeroSeguro(wsProyeccion.Cells(filaVentas, 9).Value)
+
+    For fila = 54 To 67
+
+        clave = Trim$(CStr(wsKPI.Cells(fila, 2).Value))
+
+        filaFuente = BuscarFilaTextoExacto( _
+            wsProyeccion, _
+            4, _
+            clave)
+
+        If filaFuente = 0 Then
+
+            Err.Raise vbObjectError + 1064, "ActualizarIndicadores", _
+                      "No se encontró el concepto '" & clave & _
+                      "' en la hoja '" & wsProyeccion.Name & "'."
+
+        End If
+
+        wsKPI.Cells(fila, columnaMes).Value = _
+            NumeroSeguro(wsProyeccion.Cells(filaFuente, 9).Value)
+
+    Next fila
+
+    wsKPI.Cells(68, columnaMes).Value = _
+        NumeroSeguro(wsProyeccion.Cells(filaGastoFinanciero, 9).Value)
+
+    wsKPI.Cells(50, columnaMes).Value = Application.Sum( _
+        wsKPI.Range( _
+            wsKPI.Cells(54, columnaMes), _
+            wsKPI.Cells(68, columnaMes)))
+
+    '=============================================================
+    ' FECHAS DEL GANTT
+    '
+    'También se buscan mediante las etiquetas de la hoja Flujo.
+    '=============================================================
+    filaInicioObra = BuscarFilaTextoExacto( _
+        wsFlujo, _
+        3, _
+        "Obra: Fecha inicio de obra")
+
+    filaFinObra = BuscarFilaTextoExacto( _
+        wsFlujo, _
+        3, _
+        "Obra: Fecha fin de obra")
+
+    filaInicioDevolucion = BuscarFilaTextoExacto( _
+        wsFlujo, _
+        3, _
+        "Devolución: Fecha inicio de devolución")
+
+    If filaInicioObra = 0 Or _
+       filaFinObra = 0 Or _
+       filaInicioDevolucion = 0 Then
+
+        Err.Raise vbObjectError + 1065, "ActualizarIndicadores", _
+                  "No se encontraron todas las fechas del Gantt " & _
+                  "en la hoja '" & wsFlujo.Name & "'."
+
+    End If
+
+    wsKPI.Cells(72, columnaMes).Value = _
+        wsFlujo.Cells(filaInicioObra, 4).Value
+
+    fechaFinObra = wsFlujo.Cells(filaFinObra, 4).Value
+
+    If Not IsDate(fechaFinObra) Then
+
+        Err.Raise vbObjectError + 1066, "ActualizarIndicadores", _
+                  "La fecha de fin de obra no es válida."
+
+    End If
+
+    'La entrega se mantiene un mes después del fin de obra,
+    'tal como está formulada en las plantillas originales.
+    wsKPI.Cells(73, columnaMes).Value = _
+        DateAdd("m", 1, CDate(fechaFinObra))
+
+    wsKPI.Cells(74, columnaMes).Value = _
+        wsFlujo.Cells(filaInicioDevolucion, 4).Value
+
+End Sub
+
+Private Sub ActualizarGanttResumen( _
+    ByVal wsKPI As Worksheet, _
+    ByVal columnaMes As Long, _
+    ByVal mesCorte As Date)
+
+    Dim columnaAnterior As Long
+
+    columnaAnterior = columnaMes - 1
+    If columnaAnterior < COLUMNA_INICIO_KPI Then
+        columnaAnterior = COLUMNA_INICIO_KPI
+    End If
+
+    '=========================================================
+    ' CUADRO SUPERIOR: P I VS. MES DE CORTE
+    '
+    ' Estructura original:
+    ' X = Concepto
+    ' Y = P I
+    ' Z = Mes de corte
+    ' AA = Diferencia en meses
+    '=========================================================
+    wsKPI.Range("X179").Value = "Concepto"
+    wsKPI.Range("Y179").Value = "P I"
+    wsKPI.Range("AA179").Value = "dif (meses)"
+
+    'Se restablece el formato de fecha que fue alterado.
+    wsKPI.Range("Z179").NumberFormat = "mmm-yy"
+    wsKPI.Range("Z179").Formula = "=$E$2"
+
+    'P I fijo: toma las fechas iniciales de H72 y H73.
+    wsKPI.Range("Y180").Formula = "=" & _
+        wsKPI.Cells(72, COLUMNA_INICIO_KPI).Address(False, False)
+
+    wsKPI.Range("Y181").Formula = "=" & _
+        wsKPI.Cells(73, COLUMNA_INICIO_KPI).Address(False, False)
+
+    'Mes actual: toma las fechas de la columna correspondiente a E2.
+    wsKPI.Range("Z180").Formula = "=" & _
+        wsKPI.Cells(72, columnaMes).Address(False, False)
+
+    wsKPI.Range("Z181").Formula = "=" & _
+        wsKPI.Cells(73, columnaMes).Address(False, False)
+
+    wsKPI.Range("AA180").FormulaR1C1 = _
+        "=IFERROR(-DATEDIF(RC[-2],RC[-1],""m""),0)+" & _
+        "IFERROR(DATEDIF(RC[-1],RC[-2],""m""),0)"
+
+    wsKPI.Range("AA181").FormulaR1C1 = _
+        "=IFERROR(-DATEDIF(RC[-2],RC[-1],""m""),0)+" & _
+        "IFERROR(DATEDIF(RC[-1],RC[-2],""m""),0)"
+
+    '=========================================================
+    ' CUADRO INFERIOR: MES ANTERIOR VS. MES DE CORTE
+    '
+    ' Estructura original:
+    ' X = Concepto
+    ' Y = Mes anterior
+    ' Z = Mes de corte
+    ' AA = Diferencia en meses
+    '=========================================================
+    wsKPI.Range("X185").Value = "Concepto"
+    wsKPI.Range("AA185").Value = "dif (meses)"
+
+    'Se restauran como fechas, no como texto.
+    wsKPI.Range("Y185:Z185").NumberFormat = "mmm-yy"
+    wsKPI.Range("Y185").Formula = "=EDATE($E$2,-1)"
+    wsKPI.Range("Z185").Formula = "=$E$2"
+
+    'Mes anterior.
+    wsKPI.Range("Y186").Formula = "=" & _
+        wsKPI.Cells(72, columnaAnterior).Address(False, False)
+
+    wsKPI.Range("Y187").Formula = "=" & _
+        wsKPI.Cells(73, columnaAnterior).Address(False, False)
+
+    'Mes actual.
+    wsKPI.Range("Z186").Formula = "=" & _
+        wsKPI.Cells(72, columnaMes).Address(False, False)
+
+    wsKPI.Range("Z187").Formula = "=" & _
+        wsKPI.Cells(73, columnaMes).Address(False, False)
+
+    wsKPI.Range("AA186").FormulaR1C1 = _
+        "=IFERROR(-DATEDIF(RC[-2],RC[-1],""m""),0)+" & _
+        "IFERROR(DATEDIF(RC[-1],RC[-2],""m""),0)"
+
+    wsKPI.Range("AA187").FormulaR1C1 = _
+        "=IFERROR(-DATEDIF(RC[-2],RC[-1],""m""),0)+" & _
+        "IFERROR(DATEDIF(RC[-1],RC[-2],""m""),0)"
+
+    'Solo se restauran los formatos originales del Gantt.
+    wsKPI.Range("Y180:Z181,Y186:Z187").NumberFormat = "mmm-yy"
+    wsKPI.Range("AA180:AA181,AA186:AA187").NumberFormat = "0;-0;-"
+
+End Sub
+
+Private Sub ActualizarVentasProyectadas( _
+    ByVal wsKPI As Worksheet, _
+    ByVal wsVentas As Worksheet, _
+    ByVal wsIngresos As Worksheet, _
+    ByVal columnaMes As Long, _
+    ByVal mesCorte As Date)
+
+    Dim columna As Long
+    Dim columnaFuente As Long
+    Dim columnaInicialFuente As Long
+    Dim columnaFinalFuente As Long
+    Dim ultimaColumnaKPI As Long
+
+    Dim filaMesIngresos As Long
+    Dim filaVentasReales As Long
+    Dim filaMesProyectado As Long
+    Dim filaVentasProyectadas As Long
+    Dim filaPorVender As Long
+    Dim filaDepartamentosPorVender As Long
+
+    Dim fecha As Date
+    Dim totalUnidades As Double
+    Dim limiteFormula As String
+    Dim usarHojaVentas As Boolean
+    Dim wsFuenteProyectada As Worksheet
+
+    Const FORMATO_UNIDADES As String = "#,##0;-#,##0;-"
+
+    ultimaColumnaKPI = wsKPI.Cells( _
+                            FILA_MESES_KPI, _
+                            wsKPI.Columns.Count).End(xlToLeft).Column
+
+    '=============================================================
+    ' VENTAS REALES
+    '
+    'Busca Departamentos dentro de la sección VENTA REAL.
+    '=============================================================
+    filaMesIngresos = DetectarFilaMeses( _
+                            wsIngresos, _
+                            1, _
+                            10)
+
+    If filaMesIngresos = 0 Then
+
+        Err.Raise vbObjectError + 1070, "ActualizarVentasProyectadas", _
+                  "No se encontró la fila de meses en la hoja '" & _
+                  wsIngresos.Name & "'."
+
+    End If
+
+    filaVentasReales = BuscarFilaEntreSecciones( _
+                            wsIngresos, _
+                            5, _
+                            "VENTA REAL", _
+                            "POR VENDER", _
+                            "Departamentos")
+
+    If filaVentasReales = 0 Then
+
+        Err.Raise vbObjectError + 1071, "ActualizarVentasProyectadas", _
+                  "No se encontró Departamentos dentro de VENTA REAL " & _
+                  "en la hoja '" & wsIngresos.Name & "'."
+
+    End If
+
+    '=============================================================
+    ' VENTAS PROYECTADAS
+    '
+    'Primero intenta encontrar una tabla mensual en la hoja Ventas.
+    'Si el proyecto no la tiene, utiliza la programación de Ingresos.
+    '=============================================================
+    filaMesProyectado = DetectarFilaMeses( _
+                            wsVentas, _
+                            38, _
+                            wsVentas.Cells(wsVentas.Rows.Count, 2).End(xlUp).Row + 5)
+
+    If filaMesProyectado > 0 Then
+
+        filaVentasProyectadas = BuscarFilaTextoExacto( _
+                                    wsVentas, _
+                                    2, _
+                                    "Departamentos", _
+                                    filaMesProyectado + 1, _
+                                    filaMesProyectado + 10)
+
+        If filaVentasProyectadas > 0 Then
+            usarHojaVentas = True
+        End If
+
+    End If
+
+    If Not usarHojaVentas Then
+
+        filaMesProyectado = filaMesIngresos
+
+        filaVentasProyectadas = BuscarFilaEntreSecciones( _
+                                    wsIngresos, _
+                                    5, _
+                                    "INGRESOS", _
+                                    "VENTA REAL", _
+                                    "Departamentos")
+
+        If filaVentasProyectadas = 0 Then
+
+            Err.Raise vbObjectError + 1072, "ActualizarVentasProyectadas", _
+                      "No se encontró la programación de ventas proyectadas " & _
+                      "en Ventas ni en Ingresos."
+
+        End If
+
+    End If
+
+    '=============================================================
+    ' LÍMITE DE UNIDADES
+    '
+    'Mantiene la misma lógica de la versión anterior:
+    'toma Departamentos dentro de la sección POR VENDER.
+    '=============================================================
+    filaPorVender = BuscarFilaTextoExacto( _
+                        wsVentas, _
+                        2, _
+                        "POR VENDER")
+
+    If filaPorVender > 0 Then
+
+        filaDepartamentosPorVender = BuscarFilaTextoExacto( _
+                                        wsVentas, _
+                                        2, _
+                                        "Departamentos", _
+                                        filaPorVender + 1, _
+                                        filaPorVender + 10)
+
+        If filaDepartamentosPorVender > 0 Then
+            totalUnidades = NumeroSeguro( _
+                                wsVentas.Cells( _
+                                    filaDepartamentosPorVender, _
+                                    3).Value)
+        End If
+
+    End If
+
+    If usarHojaVentas Then
+        Set wsFuenteProyectada = wsVentas
+    Else
+        Set wsFuenteProyectada = wsIngresos
+    End If
+
+    columnaInicialFuente = PrimeraColumnaFecha( _
+                                wsFuenteProyectada, _
+                                filaMesProyectado)
+
+    columnaFinalFuente = UltimaColumnaFecha( _
+                                wsFuenteProyectada, _
+                                filaMesProyectado)
+
+    If totalUnidades <= 0 Then
+
+        totalUnidades = Application.Sum( _
+            wsFuenteProyectada.Range( _
+                wsFuenteProyectada.Cells( _
+                    filaVentasProyectadas, columnaInicialFuente), _
+                wsFuenteProyectada.Cells( _
+                    filaVentasProyectadas, columnaFinalFuente)))
+
+    End If
+
+    If totalUnidades > 0 Then
+        limiteFormula = CStr(CLng(totalUnidades))
+    Else
+        limiteFormula = vbNullString
+    End If
+
+    '=============================================================
+    ' ACTUALIZACIÓN MENSUAL
+    '=============================================================
+    For columna = COLUMNA_INICIO_KPI To ultimaColumnaKPI
+
+        If EsFechaProyecto(wsKPI.Cells(FILA_MESES_KPI, columna).Value) Then
+
+            fecha = NormalizarMes( _
+                        wsKPI.Cells(FILA_MESES_KPI, columna).Value)
+
+            wsKPI.Cells(122, columna).Value = fecha
+
+            columnaFuente = BuscarColumnaMes( _
+                                wsIngresos, _
+                                filaMesIngresos, _
+                                fecha, _
+                                PrimeraColumnaFecha( _
+                                    wsIngresos, filaMesIngresos), _
+                                UltimaColumnaFecha( _
+                                    wsIngresos, filaMesIngresos))
+
+            If columnaFuente > 0 Then
+
+                wsKPI.Cells(78, columna).Formula = _
+                    "='" & wsIngresos.Name & "'!" & _
+                    wsIngresos.Cells( _
+                        filaVentasReales, _
+                        columnaFuente).Address(False, False)
+
+            Else
+                wsKPI.Cells(78, columna).ClearContents
+            End If
+
+            If usarHojaVentas Then
+
+                columnaFuente = BuscarColumnaMes( _
+                                    wsVentas, _
+                                    filaMesProyectado, _
+                                    fecha, _
+                                    columnaInicialFuente, _
+                                    columnaFinalFuente)
+
+                If columnaFuente > 0 Then
+
+                    wsKPI.Cells(79, columna).Formula = _
+                        "='" & wsVentas.Name & "'!" & _
+                        wsVentas.Cells( _
+                            filaVentasProyectadas, _
+                            columnaFuente).Address(False, False)
+
+                Else
+                    wsKPI.Cells(79, columna).ClearContents
+                End If
+
+            Else
+
+                columnaFuente = BuscarColumnaMes( _
+                                    wsIngresos, _
+                                    filaMesProyectado, _
+                                    fecha, _
+                                    columnaInicialFuente, _
+                                    columnaFinalFuente)
+
+                If columnaFuente > 0 Then
+
+                    wsKPI.Cells(79, columna).Formula = _
+                        "='" & wsIngresos.Name & "'!" & _
+                        wsIngresos.Cells( _
+                            filaVentasProyectadas, _
+                            columnaFuente).Address(False, False)
+
+                Else
+                    wsKPI.Cells(79, columna).ClearContents
+                End If
+
+            End If
+
+            wsKPI.Cells(78, columna).NumberFormat = FORMATO_UNIDADES
+            wsKPI.Cells(79, columna).NumberFormat = FORMATO_UNIDADES
+
+            If Len(limiteFormula) > 0 Then
+
+                wsKPI.Cells(123, columna).FormulaR1C1 = _
+                    "=MIN(" & limiteFormula & ",RC[-1]+R[-44]C)"
+
+            Else
+
+                wsKPI.Cells(123, columna).FormulaR1C1 = _
+                    "=RC[-1]+R[-44]C"
+
+            End If
+
+            wsKPI.Cells(123, columna).NumberFormat = FORMATO_UNIDADES
+
+            If fecha <= mesCorte Then
+
+                If Len(limiteFormula) > 0 Then
+
+                    wsKPI.Cells(124, columna).FormulaR1C1 = _
+                        "=MIN(" & limiteFormula & ",RC[-1]+R[-46]C)"
+
+                Else
+
+                    wsKPI.Cells(124, columna).FormulaR1C1 = _
+                        "=RC[-1]+R[-46]C"
+
+                End If
+
+            Else
+                wsKPI.Cells(124, columna).ClearContents
+            End If
+
+            wsKPI.Cells(124, columna).NumberFormat = FORMATO_UNIDADES
+
+        End If
+
+    Next columna
+
+    wsKPI.Calculate
+
+End Sub
+
+Private Sub ActualizarFilasSoporteGraficos( _
+    ByVal wsKPI As Worksheet, _
+    ByVal columnaMes As Long, _
+    ByVal mesCorte As Date)
+
+    Dim filaFecha As Variant
+    Dim filaPI As Variant
+    Dim filaReal As Variant
+    Dim columna As Long
+    Dim ultimaColumna As Long
+
+    ultimaColumna = wsKPI.Cells( _
+                        FILA_MESES_KPI, _
+                        wsKPI.Columns.Count).End(xlToLeft).Column
+
+    'Las categorías de todos los gráficos siguen los meses de la fila 2.
+    For columna = COLUMNA_INICIO_KPI To ultimaColumna
+
+        If IsDate(wsKPI.Cells(FILA_MESES_KPI, columna).Value) Then
+
+            For Each filaFecha In Array(83, 87, 92, 96, 100, 104, 108, 112, 116, 122)
+                wsKPI.Cells(CLng(filaFecha), columna).Value = _
+                    NormalizarMes(wsKPI.Cells(FILA_MESES_KPI, columna).Value)
+            Next filaFecha
+
+        End If
+
+    Next columna
+
+    'La serie P I avanza mes a mes.
+    'Se completa solo hasta la fecha de corte y los meses futuros quedan vacíos.
+    For Each filaPI In Array(84, 88, 93, 97, 101, 105, 109, 113, 117)
+
+        For columna = COLUMNA_INICIO_KPI To ultimaColumna
+
+            If IsDate(wsKPI.Cells(FILA_MESES_KPI, columna).Value) Then
+
+                If columna <= columnaMes Then
+                    wsKPI.Cells(CLng(filaPI), columna).Value = _
+                        NumeroSeguro(wsKPI.Cells(CLng(filaPI), COLUMNA_INICIO_KPI).Value)
+                Else
+                    wsKPI.Cells(CLng(filaPI), columna).ClearContents
+                End If
+
+            End If
+
+        Next columna
+
+    Next filaPI
+
+    'Fotografía del mes actual.
+    wsKPI.Cells(85, columnaMes).Value = NumeroSeguro(wsKPI.Cells(25, columnaMes).Value)
+
+    wsKPI.Cells(89, columnaMes).Value = NumeroSeguro(wsKPI.Cells(26, columnaMes).Value)
+    wsKPI.Cells(90, columnaMes).Value = NumeroSeguro(wsKPI.Cells(29, columnaMes).Value) / 1000000#
+
+    wsKPI.Cells(94, columnaMes).Value = NumeroSeguro(wsKPI.Cells(17, columnaMes).Value) / 1000000#
+    wsKPI.Cells(98, columnaMes).Value = NumeroSeguro(wsKPI.Cells(27, columnaMes).Value)
+    wsKPI.Cells(102, columnaMes).Value = NumeroSeguro(wsKPI.Cells(8, columnaMes).Value) / 1000000#
+
+    wsKPI.Cells(106, columnaMes).Value = ( _
+        -NumeroSeguro(wsKPI.Cells(9, columnaMes).Value) - _
+         NumeroSeguro(wsKPI.Cells(11, columnaMes).Value)) / 1000000#
+
+    wsKPI.Cells(110, columnaMes).Value = NumeroSeguro(wsKPI.Cells(38, columnaMes).Value) / 1000000#
+
+    wsKPI.Cells(114, columnaMes).Value = _
+        NumeroSeguro(wsKPI.Cells(106, columnaMes).Value) - _
+        NumeroSeguro(wsKPI.Cells(110, columnaMes).Value)
+
+    wsKPI.Cells(118, columnaMes).Value = NumeroSeguro(wsKPI.Cells(48, columnaMes).Value) / 1000000#
+
+    'Las series reales terminan exactamente en la fecha de corte.
+    'Los meses posteriores quedan vacíos para que la línea no caiga a cero.
+    If columnaMes < ultimaColumna Then
+
+        For Each filaReal In Array(85, 89, 90, 94, 98, 102, 106, 110, 114, 118)
+            wsKPI.Range( _
+                wsKPI.Cells(CLng(filaReal), columnaMes + 1), _
+                wsKPI.Cells(CLng(filaReal), ultimaColumna)).ClearContents
+        Next filaReal
+
+    End If
+
+End Sub
+
+Private Function ActualizarHistoricoFlujo( _
+    ByVal wsKPIFlujo As Worksheet, _
+    ByVal wsFlujo As Worksheet, _
+    ByVal mesCorte As Date) As Long
+
+    Dim filaMes As Long
+    Dim filaInicialHistorico As Long
+    Dim ultimaFilaHistorico As Long
+    Dim filaEncabezado As Long
+    Dim filaMesesFlujo As Long
+    Dim filaTIRDI As Long
+    Dim filaFlujoInversionista As Long
+
+    Dim columnaMesHistorico As Long
+    Dim columnaInicioDatos As Long
+    Dim columnaFinDatos As Long
+    Dim columnaTIR As Long
+    Dim columnaUtilidad As Long
+    Dim columna As Long
+    Dim columnaFuente As Long
+    Dim ultimaColumnaFlujo As Long
+
+    Dim fecha As Date
+    Dim valores() As Variant
+    Dim tirAnual As Variant
+
+    'Encabezado mensual de KPIs Flujo.
+    filaEncabezado = DetectarFilaMeses( _
+                        wsKPIFlujo, _
+                        1, _
+                        4)
+
+    If filaEncabezado = 0 Then
+
+        Err.Raise vbObjectError + 1080, "ActualizarHistoricoFlujo", _
+                  "No se encontró la fila de meses en '" & _
+                  wsKPIFlujo.Name & "'."
+
+    End If
+
+    columnaInicioDatos = PrimeraColumnaFecha( _
+                                wsKPIFlujo, _
+                                filaEncabezado)
+
+    columnaFinDatos = UltimaColumnaFecha( _
+                            wsKPIFlujo, _
+                            filaEncabezado)
+
+    columnaMesHistorico = columnaInicioDatos - 1
+
+    columnaTIR = BuscarColumnaTextoExacto( _
+                        wsKPIFlujo, _
+                        filaEncabezado, _
+                        "tir")
+
+    columnaUtilidad = BuscarColumnaTextoExacto( _
+                            wsKPIFlujo, _
+                            filaEncabezado, _
+                            "utilidad")
+
+    If columnaTIR = 0 Or columnaUtilidad = 0 Then
+
+        Err.Raise vbObjectError + 1081, "ActualizarHistoricoFlujo", _
+                  "No se encontraron las columnas TIR y utilidad " & _
+                  "en '" & wsKPIFlujo.Name & "'."
+
+    End If
+
+    filaInicialHistorico = PrimeraFilaFecha( _
+                                wsKPIFlujo, _
+                                columnaMesHistorico, _
+                                filaEncabezado + 1)
+
+    If filaInicialHistorico = 0 Then
+
+        Err.Raise vbObjectError + 1082, "ActualizarHistoricoFlujo", _
+                  "No se encontró el inicio del histórico en '" & _
+                  wsKPIFlujo.Name & "'."
+
+    End If
+
+    ultimaFilaHistorico = UltimaFilaMensualConsecutiva( _
+                                wsKPIFlujo, _
+                                columnaMesHistorico, _
+                                filaInicialHistorico)
+
+    filaMes = BuscarFilaMes( _
+                wsKPIFlujo, _
+                columnaMesHistorico, _
+                mesCorte, _
+                filaInicialHistorico, _
+                ultimaFilaHistorico)
+
+    If filaMes = 0 Then
+
+        If EsFechaProyecto( _
+                wsKPIFlujo.Cells( _
+                    ultimaFilaHistorico, _
+                    columnaMesHistorico).Value) _
+           And NormalizarMes( _
+                wsKPIFlujo.Cells( _
+                    ultimaFilaHistorico, _
+                    columnaMesHistorico).Value) < mesCorte Then
+
+            filaMes = ultimaFilaHistorico + 1
+
+            wsKPIFlujo.Range( _
+                wsKPIFlujo.Cells(ultimaFilaHistorico, 2), _
+                wsKPIFlujo.Cells( _
+                    ultimaFilaHistorico, _
+                    columnaFinDatos)).Copy
+
+            wsKPIFlujo.Cells(filaMes, 2).PasteSpecial Paste:=xlPasteFormats
+
+            wsKPIFlujo.Rows(filaMes).RowHeight = _
+                wsKPIFlujo.Rows(ultimaFilaHistorico).RowHeight
+
+            Application.CutCopyMode = False
+
+        Else
+
+            Err.Raise vbObjectError + 1083, "ActualizarHistoricoFlujo", _
+                      "El mes " & Format(mesCorte, "mmmm yyyy") & _
+                      " no aparece en el histórico y no puede agregarse " & _
+                      "sin alterar su orden."
+
+        End If
+
+    End If
+
+    If filaMes > filaInicialHistorico Then
+
+        If WorksheetFunction.CountA( _
+            wsKPIFlujo.Range( _
+                wsKPIFlujo.Cells(filaMes, columnaInicioDatos), _
+                wsKPIFlujo.Cells(filaMes, columnaFinDatos))) = 0 Then
+
+            wsKPIFlujo.Range( _
+                wsKPIFlujo.Cells(filaMes - 1, 2), _
+                wsKPIFlujo.Cells( _
+                    filaMes - 1, _
+                    columnaFinDatos)).Copy
+
+            wsKPIFlujo.Cells(filaMes, 2).PasteSpecial Paste:=xlPasteFormats
+            Application.CutCopyMode = False
+
+        End If
+
+    End If
+
+    'La fecha principal se mantiene en la columna D de la plantilla.
+    wsKPIFlujo.Cells(filaMes, 4).Value = mesCorte
+    wsKPIFlujo.Cells(filaMes, columnaMesHistorico).Value = mesCorte
+
+    'Ubica la fila mensual de Flujo y la fila del inversionista DI.
+    filaMesesFlujo = DetectarFilaMeses(wsFlujo, 1, 5)
+
+    filaTIRDI = BuscarFilaTextoExacto( _
+                    wsFlujo, _
+                    3, _
+                    "TIR di")
+
+    filaFlujoInversionista = BuscarFilaTextoHaciaArriba( _
+                                wsFlujo, _
+                                3, _
+                                "Flujo del Inversionista", _
+                                filaTIRDI - 1)
+
+    If filaMesesFlujo = 0 Or filaFlujoInversionista = 0 Then
+
+        Err.Raise vbObjectError + 1084, "ActualizarHistoricoFlujo", _
+                  "No se encontró el flujo mensual del inversionista " & _
+                  "en la hoja '" & wsFlujo.Name & "'."
+
+    End If
+
+    ultimaColumnaFlujo = UltimaColumnaFecha( _
+                                wsFlujo, _
+                                filaMesesFlujo)
+
+    ReDim valores( _
+        1 To 1, _
+        1 To columnaFinDatos - columnaInicioDatos + 1)
+
+    For columna = columnaInicioDatos To columnaFinDatos
+
+        If EsFechaProyecto( _
+                wsKPIFlujo.Cells( _
+                    filaEncabezado, _
+                    columna).Value) Then
+
+            fecha = NormalizarMes( _
+                        wsKPIFlujo.Cells( _
+                            filaEncabezado, _
+                            columna).Value)
+
+            columnaFuente = BuscarColumnaMes( _
+                                wsFlujo, _
+                                filaMesesFlujo, _
+                                fecha, _
+                                PrimeraColumnaFecha( _
+                                    wsFlujo, _
+                                    filaMesesFlujo), _
+                                ultimaColumnaFlujo)
+
+            If columnaFuente > 0 Then
+
+                valores( _
+                    1, _
+                    columna - columnaInicioDatos + 1) = _
+                        NumeroSeguro( _
+                            wsFlujo.Cells( _
+                                filaFlujoInversionista, _
+                                columnaFuente).Value)
+
+            Else
+
+                valores( _
+                    1, _
+                    columna - columnaInicioDatos + 1) = 0
+
+            End If
+
+        Else
+
+            valores( _
+                1, _
+                columna - columnaInicioDatos + 1) = 0
+
+        End If
+
+    Next columna
+
+    wsKPIFlujo.Range( _
+        wsKPIFlujo.Cells(filaMes, columnaInicioDatos), _
+        wsKPIFlujo.Cells(filaMes, columnaFinDatos)).Value = valores
+
+    tirAnual = CalcularTIRAnual( _
+                    wsKPIFlujo.Range( _
+                        wsKPIFlujo.Cells( _
+                            filaMes, _
+                            columnaInicioDatos), _
+                        wsKPIFlujo.Cells( _
+                            filaMes, _
+                            columnaFinDatos)))
+
+    If IsEmpty(tirAnual) Then
+        wsKPIFlujo.Cells(filaMes, columnaTIR).ClearContents
+    Else
+        wsKPIFlujo.Cells(filaMes, columnaTIR).Value = tirAnual
+    End If
+
+    wsKPIFlujo.Cells(filaMes, columnaUtilidad).Value = Application.Sum( _
+        wsKPIFlujo.Range( _
+            wsKPIFlujo.Cells(filaMes, columnaInicioDatos), _
+            wsKPIFlujo.Cells(filaMes, columnaFinDatos)))
+
+    ActualizarHistoricoFlujo = filaMes
+
+End Function
+
+Private Sub ActualizarGraficos( _
+    ByVal wsKPI As Worksheet, _
+    ByVal columnaMes As Long)
+
+    Dim columnaInicial As Long
+    Dim columnaFinal As Long
+
+    'El archivo original trabaja con una ventana móvil de 7 meses.
+    'Ejemplo:
+    'Junio  -> H:N
+    'Julio  -> I:O
+    'Agosto -> J:P
+    columnaFinal = columnaMes
+    columnaInicial = columnaFinal - 6
+
+    If columnaInicial < COLUMNA_INICIO_KPI Then
+        columnaInicial = COLUMNA_INICIO_KPI
+    End If
+
+    ActualizarRangosGrafico wsKPI, "tir", 83, columnaInicial, columnaFinal, 84, 85
+
+    'MOIC conserva exactamente el orden original:
+    'Serie 1 = P I
+    'Serie 2 = Equity
+    'Serie 3 = R + P
+    ActualizarRangosGrafico wsKPI, "moic", 87, columnaInicial, columnaFinal, 88, 90, 89
+
+    ActualizarRangosGrafico wsKPI, "utilidad", 92, columnaInicial, columnaFinal, 93, 94
+    ActualizarRangosGrafico wsKPI, "margen", 96, columnaInicial, columnaFinal, 97, 98
+    ActualizarRangosGrafico wsKPI, "ingresos", 100, columnaInicial, columnaFinal, 101, 102
+    ActualizarRangosGrafico wsKPI, "costostotales", 104, columnaInicial, columnaFinal, 105, 106
+    ActualizarRangosGrafico wsKPI, "costosdirectos", 108, columnaInicial, columnaFinal, 109, 110
+    ActualizarRangosGrafico wsKPI, "costosindirectos", 112, columnaInicial, columnaFinal, 113, 114
+    ActualizarRangosGrafico wsKPI, "gastosfinancieros", 116, columnaInicial, columnaFinal, 117, 118
+    ActualizarRangosGrafico wsKPI, "ventas", 122, columnaInicial, columnaFinal, 123, 124
+
+End Sub
+
+Private Sub ActualizarRangosGrafico( _
+    ByVal ws As Worksheet, _
+    ByVal nombreGrafico As String, _
+    ByVal filaCategorias As Long, _
+    ByVal columnaInicial As Long, _
+    ByVal columnaFinal As Long, _
+    ParamArray filasSeries() As Variant)
+
+    Dim objetoGrafico As ChartObject
+    Dim grafico As Chart
+    Dim serieGrafico As Series
+    Dim etiquetasNuevas As Collection
+
+    Dim numeroSerie As Long
+    Dim indice As Long
+    Dim filaSerie As Long
+    Dim ultimoPunto As Long
+    Dim valorUltimoPunto As Variant
+
+    Dim teniaEtiqueta As Boolean
+    Dim nombreFuente As String
+    Dim tamanioFuente As Double
+    Dim negritaFuente As Variant
+    Dim cursivaFuente As Variant
+    Dim subrayadoFuente As Variant
+    Dim colorFuente As Long
+    Dim formatoNumero As String
+    Dim posicionEtiqueta As Long
+    Dim orientacionEtiqueta As Long
+    Dim separadorEtiqueta As String
+
+    On Error Resume Next
+    Set objetoGrafico = ws.ChartObjects(nombreGrafico)
+    On Error GoTo 0
+
+    If objetoGrafico Is Nothing Then
+        Err.Raise vbObjectError + 1030, "ActualizarRangosGrafico", _
+                  "No se encontró el gráfico '" & nombreGrafico & _
+                  "' en la hoja '" & ws.Name & "'."
+    End If
+
+    Set grafico = objetoGrafico.Chart
+    Set etiquetasNuevas = New Collection
+
+    'No se agregan ni eliminan series.
+    'Se conservan colores, grosores, leyendas, ejes,
+    'tamaños y demás formatos del archivo original.
+    If grafico.SeriesCollection.Count < _
+       (UBound(filasSeries) - LBound(filasSeries) + 1) Then
+
+        Err.Raise vbObjectError + 1031, "ActualizarRangosGrafico", _
+                  "El gráfico '" & nombreGrafico & _
+                  "' no conserva las series originales."
+
+    End If
+
+    ultimoPunto = columnaFinal - columnaInicial + 1
+
+    For indice = LBound(filasSeries) To UBound(filasSeries)
+
+        numeroSerie = indice - LBound(filasSeries) + 1
+        filaSerie = CLng(filasSeries(indice))
+
+        Set serieGrafico = grafico.SeriesCollection(numeroSerie)
+
+        'Se guarda primero el formato de la etiqueta que ya existe
+        'en el archivo original.
+        CapturarFormatoEtiquetaOriginal _
+            serieGrafico, _
+            teniaEtiqueta, _
+            nombreFuente, _
+            tamanioFuente, _
+            negritaFuente, _
+            cursivaFuente, _
+            subrayadoFuente, _
+            colorFuente, _
+            formatoNumero, _
+            posicionEtiqueta, _
+            orientacionEtiqueta, _
+            separadorEtiqueta
+
+        'ÚNICAMENTE se actualizan los meses y los valores.
+        serieGrafico.XValues = ws.Range( _
+            ws.Cells(filaCategorias, columnaInicial), _
+            ws.Cells(filaCategorias, columnaFinal))
+
+        serieGrafico.Values = ws.Range( _
+            ws.Cells(filaSerie, columnaInicial), _
+            ws.Cells(filaSerie, columnaFinal))
+
+        valorUltimoPunto = ws.Cells(filaSerie, columnaFinal).Value
+
+        'La etiqueta se desplaza al último mes manteniendo
+        'su fuente, tamaño, color, formato numérico y posición.
+        If teniaEtiqueta Then
+
+            MoverEtiquetaAlUltimoMes _
+                serieGrafico, _
+                ultimoPunto, _
+                valorUltimoPunto, _
+                nombreFuente, _
+                tamanioFuente, _
+                negritaFuente, _
+                cursivaFuente, _
+                subrayadoFuente, _
+                colorFuente, _
+                formatoNumero, _
+                posicionEtiqueta, _
+                orientacionEtiqueta, _
+                separadorEtiqueta
+
+            On Error Resume Next
+
+            If ultimoPunto >= 1 And _
+               ultimoPunto <= serieGrafico.Points.Count Then
+
+                If serieGrafico.Points(ultimoPunto).HasDataLabel Then
+                    etiquetasNuevas.Add _
+                        serieGrafico.Points(ultimoPunto).DataLabel
+                End If
+
+            End If
+
+            On Error GoTo 0
+
+        End If
+
+    Next indice
+
+    grafico.Refresh
+    DoEvents
+
+    'Primero se iguala el tamaño; después se centra cada etiqueta
+    'considerando su ancho real.
+    IgualarTamanioEtiquetasAlMayor etiquetasNuevas
+
+    grafico.Refresh
+    DoEvents
+
+    AlinearEtiquetasUltimoMes etiquetasNuevas
+
+    'Quitar únicamente las líneas que conectan las etiquetas
+    'con los puntos de la gráfica.
+    QuitarLineasConexionEtiquetas grafico
+
+    'No volver a refrescar aquí:
+    'Excel podría recalcular la posición automática y deshacer
+    'el centrado manual de las etiquetas.
+    DoEvents
+
+End Sub
+
+Private Sub CapturarFormatoEtiquetaOriginal( _
+    ByVal serieGrafico As Series, _
+    ByRef teniaEtiqueta As Boolean, _
+    ByRef nombreFuente As String, _
+    ByRef tamanioFuente As Double, _
+    ByRef negritaFuente As Variant, _
+    ByRef cursivaFuente As Variant, _
+    ByRef subrayadoFuente As Variant, _
+    ByRef colorFuente As Long, _
+    ByRef formatoNumero As String, _
+    ByRef posicionEtiqueta As Long, _
+    ByRef orientacionEtiqueta As Long, _
+    ByRef separadorEtiqueta As String)
+
+    Dim punto As Long
+
+    teniaEtiqueta = False
+    nombreFuente = vbNullString
+    tamanioFuente = 0
+    formatoNumero = vbNullString
+    posicionEtiqueta = 0
+    orientacionEtiqueta = 0
+    separadorEtiqueta = vbNullString
+
+    On Error Resume Next
+
+    'Se toma la última etiqueta visible como plantilla.
+    For punto = serieGrafico.Points.Count To 1 Step -1
+
+        If serieGrafico.Points(punto).HasDataLabel Then
+
+            If serieGrafico.Points(punto).DataLabel.ShowValue Then
+
+                teniaEtiqueta = True
+
+                With serieGrafico.Points(punto).DataLabel
+
+                    nombreFuente = .Font.Name
+                    tamanioFuente = .Font.Size
+                    negritaFuente = .Font.Bold
+                    cursivaFuente = .Font.Italic
+                    subrayadoFuente = .Font.Underline
+                    colorFuente = .Font.Color
+
+                    formatoNumero = .NumberFormat
+                    posicionEtiqueta = .Position
+                    orientacionEtiqueta = .Orientation
+                    separadorEtiqueta = .Separator
+
+                End With
+
+                Exit For
+
+            End If
+
+        End If
+
+    Next punto
+
+    On Error GoTo 0
+
+End Sub
+
+Private Sub MoverEtiquetaAlUltimoMes( _
+    ByVal serieGrafico As Series, _
+    ByVal ultimoPunto As Long, _
+    ByVal valorUltimoPunto As Variant, _
+    ByVal nombreFuente As String, _
+    ByVal tamanioFuente As Double, _
+    ByVal negritaFuente As Variant, _
+    ByVal cursivaFuente As Variant, _
+    ByVal subrayadoFuente As Variant, _
+    ByVal colorFuente As Long, _
+    ByVal formatoNumero As String, _
+    ByVal posicionEtiqueta As Long, _
+    ByVal orientacionEtiqueta As Long, _
+    ByVal separadorEtiqueta As String)
+
+    Dim punto As Long
+
+    On Error Resume Next
+
+    'Se elimina únicamente la etiqueta anterior.
+    'No se modifica la línea ni la leyenda del gráfico.
+    For punto = 1 To serieGrafico.Points.Count
+
+        If serieGrafico.Points(punto).HasDataLabel Then
+            serieGrafico.Points(punto).DataLabel.Delete
+        End If
+
+    Next punto
+
+    If ultimoPunto < 1 Or _
+       ultimoPunto > serieGrafico.Points.Count Then
+
+        On Error GoTo 0
+        Exit Sub
+
+    End If
+
+    If IsError(valorUltimoPunto) Or _
+       Not IsNumeric(valorUltimoPunto) Then
+
+        On Error GoTo 0
+        Exit Sub
+
+    End If
+
+    'Los valores cero no muestran etiqueta.
+    If Abs(CDbl(valorUltimoPunto)) <= 0.0000001 Then
+
+        On Error GoTo 0
+        Exit Sub
+
+    End If
+
+    serieGrafico.Points(ultimoPunto).ApplyDataLabels
+
+    With serieGrafico.Points(ultimoPunto).DataLabel
+
+        .ShowValue = True
+        .ShowSeriesName = False
+        .ShowCategoryName = False
+        .ShowLegendKey = False
+        .ShowPercentage = False
+        .ShowBubbleSize = False
+
+        If Len(formatoNumero) > 0 Then
+            .NumberFormat = formatoNumero
+        End If
+
+        'Ubicar la etiqueta a la derecha del último punto para
+        'evitar que la línea del gráfico pase por encima del texto.
+        .Position = xlLabelPositionRight
+
+        If orientacionEtiqueta <> 0 Then
+            .Orientation = orientacionEtiqueta
+        End If
+
+        If Len(separadorEtiqueta) > 0 Then
+            .Separator = separadorEtiqueta
+        End If
+
+        If Len(nombreFuente) > 0 Then
+            .Font.Name = nombreFuente
+        End If
+
+        If tamanioFuente > 0 Then
+            .Font.Size = tamanioFuente
+        End If
+
+        .Font.Bold = negritaFuente
+        .Font.Italic = cursivaFuente
+        .Font.Underline = subrayadoFuente
+        .Font.Color = colorFuente
+
+    End With
+
+    On Error GoTo 0
+
+End Sub
+
+Private Sub AlinearEtiquetasUltimoMes( _
+    ByVal etiquetas As Collection)
+
+    Dim etiquetasGrafico() As DataLabel
+    Dim centroVerticalOriginal() As Double
+    Dim procesada() As Boolean
+    Dim indicesGrupo() As Long
+
+    Dim cantidad As Long
+    Dim indice As Long
+    Dim otroIndice As Long
+    Dim indiceGrupo As Long
+    Dim cantidadGrupo As Long
+
+    Dim centroHorizontal As Double
+    Dim centroHorizontalActual As Double
+    Dim centroVerticalGrupo As Double
+    Dim inicioVertical As Double
+    Dim alturaTotalGrupo As Double
+    Dim distanciaVertical As Double
+    Dim limiteAgrupacion As Double
+
+    Dim margenHorizontal As Double
+    Dim margenVertical As Double
+
+    If etiquetas Is Nothing Then Exit Sub
+    If etiquetas.Count = 0 Then Exit Sub
+
+    cantidad = etiquetas.Count
+    margenHorizontal = 12
+    margenVertical = 4
+
+    ReDim etiquetasGrafico(1 To cantidad)
+    ReDim centroVerticalOriginal(1 To cantidad)
+    ReDim procesada(1 To cantidad)
+    ReDim indicesGrupo(1 To cantidad)
+
+    On Error Resume Next
+
+    centroHorizontal = -1
+
+    'Guardar la posición original de cada etiqueta.
+    'El orden de la colección conserva el orden de las series:
+    'P I queda arriba y R + P debajo cuando comparten el mismo valor.
+    For indice = 1 To cantidad
+
+        Set etiquetasGrafico(indice) = etiquetas(indice)
+
+        centroVerticalOriginal(indice) = _
+            etiquetasGrafico(indice).Top + _
+            etiquetasGrafico(indice).Height / 2
+
+        centroHorizontalActual = _
+            etiquetasGrafico(indice).Left + _
+            etiquetasGrafico(indice).Width / 2
+
+        If centroHorizontalActual > centroHorizontal Then
+            centroHorizontal = centroHorizontalActual
+        End If
+
+    Next indice
+
+    'Alinear horizontalmente todas las etiquetas por su centro.
+    centroHorizontal = centroHorizontal + margenHorizontal
+
+    For indice = 1 To cantidad
+
+        etiquetasGrafico(indice).Position = xlLabelPositionCustom
+
+        etiquetasGrafico(indice).Left = _
+            centroHorizontal - etiquetasGrafico(indice).Width / 2
+
+    Next indice
+
+    'Agrupar únicamente las etiquetas que están sobre el mismo punto
+    'o tan cerca que podrían superponerse.
+    For indice = 1 To cantidad
+
+        If Not procesada(indice) Then
+
+            cantidadGrupo = 0
+            centroVerticalGrupo = 0
+            alturaTotalGrupo = 0
+
+            For otroIndice = indice To cantidad
+
+                If Not procesada(otroIndice) Then
+
+                    distanciaVertical = Abs( _
+                        centroVerticalOriginal(otroIndice) - _
+                        centroVerticalOriginal(indice))
+
+                    limiteAgrupacion = _
+                        (etiquetasGrafico(indice).Height + _
+                         etiquetasGrafico(otroIndice).Height) / 2 + _
+                         margenVertical
+
+                    If distanciaVertical <= limiteAgrupacion Then
+
+                        cantidadGrupo = cantidadGrupo + 1
+                        indicesGrupo(cantidadGrupo) = otroIndice
+
+                        centroVerticalGrupo = centroVerticalGrupo + _
+                            centroVerticalOriginal(otroIndice)
+
+                        alturaTotalGrupo = alturaTotalGrupo + _
+                            etiquetasGrafico(otroIndice).Height
+
+                        procesada(otroIndice) = True
+
+                    End If
+
+                End If
+
+            Next otroIndice
+
+            If cantidadGrupo > 0 Then
+
+                centroVerticalGrupo = _
+                    centroVerticalGrupo / cantidadGrupo
+
+                If cantidadGrupo = 1 Then
+
+                    'Una etiqueta aislada queda justo encima de su línea,
+                    'sin alejarse demasiado.
+                    indiceGrupo = indicesGrupo(1)
+
+                    etiquetasGrafico(indiceGrupo).Top = _
+                        Application.Max( _
+                            0, _
+                            centroVerticalGrupo - _
+                            etiquetasGrafico(indiceGrupo).Height - _
+                            margenVertical)
+
+                Else
+
+                    'Cuando varias etiquetas corresponden al mismo valor,
+                    'se reparten alrededor de la línea:
+                    'la primera serie arriba y la siguiente debajo.
+                    alturaTotalGrupo = alturaTotalGrupo + _
+                        margenVertical * (cantidadGrupo - 1)
+
+                    inicioVertical = _
+                        centroVerticalGrupo - alturaTotalGrupo / 2
+
+                    If inicioVertical < 0 Then
+                        inicioVertical = 0
+                    End If
+
+                    For otroIndice = 1 To cantidadGrupo
+
+                        indiceGrupo = indicesGrupo(otroIndice)
+
+                        etiquetasGrafico(indiceGrupo).Top = _
+                            inicioVertical
+
+                        inicioVertical = inicioVertical + _
+                            etiquetasGrafico(indiceGrupo).Height + _
+                            margenVertical
+
+                    Next otroIndice
+
+                End If
+
+            End If
+
+        End If
+
+    Next indice
+
+    'Fijar nuevamente el centro horizontal después de moverlas
+    'verticalmente. No se refresca el gráfico después de este punto.
+    DoEvents
+
+    For indice = 1 To cantidad
+
+        etiquetasGrafico(indice).Position = xlLabelPositionCustom
+
+        etiquetasGrafico(indice).Left = _
+            centroHorizontal - etiquetasGrafico(indice).Width / 2
+
+    Next indice
+
+    On Error GoTo 0
+
+End Sub
+
+Private Sub IgualarTamanioEtiquetasAlMayor( _
+    ByVal etiquetas As Collection)
+
+    Dim etiqueta As DataLabel
+    Dim tamanioMayor As Double
+
+    If etiquetas Is Nothing Then Exit Sub
+    If etiquetas.Count = 0 Then Exit Sub
+
+    tamanioMayor = 0
+
+    On Error Resume Next
+
+    For Each etiqueta In etiquetas
+
+        If etiqueta.Font.Size > tamanioMayor Then
+            tamanioMayor = etiqueta.Font.Size
+        End If
+
+    Next etiqueta
+
+    If tamanioMayor > 0 Then
+
+        For Each etiqueta In etiquetas
+            etiqueta.Font.Size = tamanioMayor
+        Next etiqueta
+
+    End If
+
+    On Error GoTo 0
+
+End Sub
+
+Private Sub QuitarLineasConexionEtiquetas( _
+    ByVal grafico As Chart)
+
+    Dim serieGrafico As Series
+
+    On Error Resume Next
+
+    For Each serieGrafico In grafico.SeriesCollection
+        serieGrafico.HasLeaderLines = False
+    Next serieGrafico
+
+    On Error GoTo 0
+
+End Sub
+
+Private Function BuscarColumnaMes( _
+    ByVal ws As Worksheet, _
+    ByVal fila As Long, _
+    ByVal mesBuscado As Date, _
+    ByVal columnaInicial As Long, _
+    ByVal columnaFinal As Long) As Long
+
+    Dim columna As Long
+
+    For columna = columnaInicial To columnaFinal
+
+        If IsDate(ws.Cells(fila, columna).Value) Then
+
+            If CLng(NormalizarMes(ws.Cells(fila, columna).Value)) = CLng(mesBuscado) Then
+                BuscarColumnaMes = columna
+                Exit Function
+            End If
+
+        End If
+
+    Next columna
+
+    BuscarColumnaMes = 0
+
+End Function
+
+Private Function BuscarFilaMes( _
+    ByVal ws As Worksheet, _
+    ByVal columna As Long, _
+    ByVal mesBuscado As Date, _
+    ByVal filaInicial As Long, _
+    ByVal filaFinal As Long) As Long
+
+    Dim fila As Long
+
+    For fila = filaInicial To filaFinal
+
+        If IsDate(ws.Cells(fila, columna).Value) Then
+
+            If CLng(NormalizarMes(ws.Cells(fila, columna).Value)) = CLng(mesBuscado) Then
+                BuscarFilaMes = fila
+                Exit Function
+            End If
+
+        End If
+
+    Next fila
+
+    BuscarFilaMes = 0
+
+End Function
+
+Private Function BuscarValorVertical( _
+    ByVal clave As Variant, _
+    ByVal rangoClaves As Range, _
+    ByVal rangoValores As Range, _
+    ByVal descripcion As String) As Variant
+
+    Dim posicion As Variant
+
+    posicion = Application.Match(clave, rangoClaves, 0)
+
+    If IsError(posicion) Then
+        Err.Raise vbObjectError + 1040, "BuscarValorVertical", _
+                  "No se encontró '" & CStr(clave) & "' en " & descripcion & "."
+    End If
+
+    If IsError(rangoValores.Cells(CLng(posicion), 1).Value) Then
+        Err.Raise vbObjectError + 1042, "BuscarValorVertical", _
+                  "La celda de resultado para '" & CStr(clave) & _
+                  "' contiene un error en " & descripcion & "."
+    End If
+
+    BuscarValorVertical = rangoValores.Cells(CLng(posicion), 1).Value
+
+End Function
+
+Private Function BuscarValorHorizontal( _
+    ByVal clave As Variant, _
+    ByVal rangoClaves As Range, _
+    ByVal rangoValores As Range, _
+    ByVal descripcion As String) As Variant
+
+    Dim posicion As Variant
+
+    posicion = Application.Match(clave, rangoClaves, 0)
+
+    If IsError(posicion) Then
+        Err.Raise vbObjectError + 1041, "BuscarValorHorizontal", _
+                  "No se encontró '" & CStr(clave) & "' en " & descripcion & "."
+    End If
+
+    If IsError(rangoValores.Cells(1, CLng(posicion)).Value) Then
+        Err.Raise vbObjectError + 1043, "BuscarValorHorizontal", _
+                  "La celda de resultado para '" & CStr(clave) & _
+                  "' contiene un error en " & descripcion & "."
+    End If
+
+    BuscarValorHorizontal = rangoValores.Cells(1, CLng(posicion)).Value
+
+End Function
+
+
+Private Function ValorPorEtiqueta( _
+    ByVal ws As Worksheet, _
+    ByVal columnaEtiqueta As Long, _
+    ByVal columnaValor As Long, _
+    ByVal etiqueta As String, _
+    Optional ByVal filaInicial As Long = 1, _
+    Optional ByVal filaFinal As Long = 0) As Double
+
+    Dim fila As Long
+
+    fila = BuscarFilaTextoExacto( _
+                ws, _
+                columnaEtiqueta, _
+                etiqueta, _
+                filaInicial, _
+                filaFinal)
+
+    If fila = 0 Then
+
+        Err.Raise vbObjectError + 1090, "ValorPorEtiqueta", _
+                  "No se encontró '" & etiqueta & "' en la hoja '" & _
+                  ws.Name & "'."
+
+    End If
+
+    ValorPorEtiqueta = NumeroSeguro( _
+                            ws.Cells( _
+                                fila, _
+                                columnaValor).Value)
+
+End Function
+
+Private Function BuscarFilaTextoExacto( _
+    ByVal ws As Worksheet, _
+    ByVal columna As Long, _
+    ByVal textoBuscado As String, _
+    Optional ByVal filaInicial As Long = 1, _
+    Optional ByVal filaFinal As Long = 0) As Long
+
+    Dim fila As Long
+    Dim ultimaFila As Long
+    Dim buscado As String
+
+    If filaInicial < 1 Then filaInicial = 1
+
+    ultimaFila = ws.Cells( _
+                    ws.Rows.Count, _
+                    columna).End(xlUp).Row
+
+    If filaFinal <= 0 Or filaFinal > ultimaFila Then
+        filaFinal = ultimaFila
+    End If
+
+    buscado = NormalizarTexto(textoBuscado)
+
+    For fila = filaInicial To filaFinal
+
+        If NormalizarTexto( _
+                CStr(ws.Cells(fila, columna).Value)) = buscado Then
+
+            BuscarFilaTextoExacto = fila
+            Exit Function
+
+        End If
+
+    Next fila
+
+    BuscarFilaTextoExacto = 0
+
+End Function
+
+Private Function BuscarFilaTextoHaciaArriba( _
+    ByVal ws As Worksheet, _
+    ByVal columna As Long, _
+    ByVal textoBuscado As String, _
+    ByVal filaInicial As Long) As Long
+
+    Dim fila As Long
+    Dim buscado As String
+
+    If filaInicial > ws.Rows.Count Then
+        filaInicial = ws.Rows.Count
+    End If
+
+    buscado = NormalizarTexto(textoBuscado)
+
+    For fila = filaInicial To 1 Step -1
+
+        If NormalizarTexto( _
+                CStr(ws.Cells(fila, columna).Value)) = buscado Then
+
+            BuscarFilaTextoHaciaArriba = fila
+            Exit Function
+
+        End If
+
+    Next fila
+
+    BuscarFilaTextoHaciaArriba = 0
+
+End Function
+
+Private Function BuscarFilaEntreSecciones( _
+    ByVal ws As Worksheet, _
+    ByVal columna As Long, _
+    ByVal seccionInicial As String, _
+    ByVal seccionFinal As String, _
+    ByVal textoBuscado As String) As Long
+
+    Dim filaInicio As Long
+    Dim filaFin As Long
+
+    filaInicio = BuscarFilaTextoExacto( _
+                    ws, _
+                    columna, _
+                    seccionInicial)
+
+    If filaInicio = 0 Then Exit Function
+
+    filaFin = BuscarFilaTextoExacto( _
+                    ws, _
+                    columna, _
+                    seccionFinal, _
+                    filaInicio + 1)
+
+    If filaFin = 0 Then
+        filaFin = ws.Cells( _
+                    ws.Rows.Count, _
+                    columna).End(xlUp).Row + 1
+    End If
+
+    BuscarFilaEntreSecciones = BuscarFilaTextoExacto( _
+                                    ws, _
+                                    columna, _
+                                    textoBuscado, _
+                                    filaInicio + 1, _
+                                    filaFin - 1)
+
+End Function
+
+Private Function DetectarFilaMeses( _
+    ByVal ws As Worksheet, _
+    ByVal filaInicial As Long, _
+    ByVal filaFinal As Long) As Long
+
+    Dim fila As Long
+    Dim columnaInicio As Long
+    Dim columnaFin As Long
+    Dim cantidad As Long
+    Dim mayorCantidad As Long
+
+    If filaInicial < 1 Then filaInicial = 1
+
+    If filaFinal > ws.Rows.Count Then
+        filaFinal = ws.Rows.Count
+    End If
+
+    For fila = filaInicial To filaFinal
+
+        ObtenerBloqueMensualMasLargo _
+            ws, _
+            fila, _
+            columnaInicio, _
+            columnaFin
+
+        If columnaInicio > 0 And columnaFin >= columnaInicio Then
+            cantidad = columnaFin - columnaInicio + 1
+        Else
+            cantidad = 0
+        End If
+
+        If cantidad > mayorCantidad Then
+
+            mayorCantidad = cantidad
+            DetectarFilaMeses = fila
+
+        End If
+
+    Next fila
+
+    If mayorCantidad < 3 Then
+        DetectarFilaMeses = 0
+    End If
+
+End Function
+
+Private Function PrimeraColumnaFecha( _
+    ByVal ws As Worksheet, _
+    ByVal fila As Long) As Long
+
+    Dim columnaInicio As Long
+    Dim columnaFin As Long
+
+    ObtenerBloqueMensualMasLargo _
+        ws, _
+        fila, _
+        columnaInicio, _
+        columnaFin
+
+    PrimeraColumnaFecha = columnaInicio
+
+End Function
+
+Private Function UltimaColumnaFecha( _
+    ByVal ws As Worksheet, _
+    ByVal fila As Long) As Long
+
+    Dim columnaInicio As Long
+    Dim columnaFin As Long
+
+    ObtenerBloqueMensualMasLargo _
+        ws, _
+        fila, _
+        columnaInicio, _
+        columnaFin
+
+    UltimaColumnaFecha = columnaFin
+
+End Function
+
+Private Sub ObtenerBloqueMensualMasLargo( _
+    ByVal ws As Worksheet, _
+    ByVal fila As Long, _
+    ByRef mejorInicio As Long, _
+    ByRef mejorFin As Long)
+
+    Dim columna As Long
+    Dim ultimaColumna As Long
+    Dim inicioActual As Long
+    Dim finActual As Long
+    Dim mejorLongitud As Long
+    Dim longitudActual As Long
+    Dim fechaAnterior As Date
+    Dim fechaActual As Date
+    Dim tieneFechaAnterior As Boolean
+
+    mejorInicio = 0
+    mejorFin = 0
+    mejorLongitud = 0
+    inicioActual = 0
+    finActual = 0
+    tieneFechaAnterior = False
+
+    ultimaColumna = ws.Cells( _
+                        fila, _
+                        ws.Columns.Count).End(xlToLeft).Column
+
+    For columna = 1 To ultimaColumna
+
+        If EsFechaProyecto(ws.Cells(fila, columna).Value) Then
+
+            fechaActual = NormalizarMes( _
+                            ws.Cells(fila, columna).Value)
+
+            If tieneFechaAnterior _
+               And columna = finActual + 1 _
+               And DateDiff("m", fechaAnterior, fechaActual) = 1 Then
+
+                finActual = columna
+
+            Else
+
+                inicioActual = columna
+                finActual = columna
+
+            End If
+
+            longitudActual = finActual - inicioActual + 1
+
+            If longitudActual > mejorLongitud Then
+
+                mejorLongitud = longitudActual
+                mejorInicio = inicioActual
+                mejorFin = finActual
+
+            End If
+
+            fechaAnterior = fechaActual
+            tieneFechaAnterior = True
+
+        Else
+
+            inicioActual = 0
+            finActual = 0
+            tieneFechaAnterior = False
+
+        End If
+
+    Next columna
+
+End Sub
+
+Private Function PrimeraFilaFecha( _
+    ByVal ws As Worksheet, _
+    ByVal columna As Long, _
+    ByVal filaInicial As Long) As Long
+
+    Dim fila As Long
+    Dim ultimaFila As Long
+
+    ultimaFila = ws.Cells( _
+                    ws.Rows.Count, _
+                    columna).End(xlUp).Row
+
+    For fila = filaInicial To ultimaFila
+
+        If EsFechaProyecto( _
+                ws.Cells(fila, columna).Value) Then
+
+            PrimeraFilaFecha = fila
+            Exit Function
+
+        End If
+
+    Next fila
+
+    PrimeraFilaFecha = 0
+
+End Function
+
+Private Function UltimaFilaMensualConsecutiva( _
+    ByVal ws As Worksheet, _
+    ByVal columna As Long, _
+    ByVal filaInicial As Long) As Long
+
+    Dim fila As Long
+    Dim fechaAnterior As Date
+    Dim fechaActual As Date
+
+    If Not EsFechaProyecto( _
+            ws.Cells(filaInicial, columna).Value) Then
+
+        UltimaFilaMensualConsecutiva = 0
+        Exit Function
+
+    End If
+
+    fechaAnterior = NormalizarMes( _
+                        ws.Cells( _
+                            filaInicial, _
+                            columna).Value)
+
+    UltimaFilaMensualConsecutiva = filaInicial
+
+    For fila = filaInicial + 1 To ws.Rows.Count
+
+        If Not EsFechaProyecto( _
+                ws.Cells(fila, columna).Value) Then
+
+            Exit For
+
+        End If
+
+        fechaActual = NormalizarMes( _
+                            ws.Cells( _
+                                fila, _
+                                columna).Value)
+
+        If DateDiff("m", fechaAnterior, fechaActual) <> 1 Then
+            Exit For
+        End If
+
+        UltimaFilaMensualConsecutiva = fila
+        fechaAnterior = fechaActual
+
+    Next fila
+
+End Function
+
+Private Function BuscarColumnaTextoExacto( _
+    ByVal ws As Worksheet, _
+    ByVal fila As Long, _
+    ByVal textoBuscado As String) As Long
+
+    Dim columna As Long
+    Dim ultimaColumna As Long
+    Dim buscado As String
+
+    buscado = NormalizarTexto(textoBuscado)
+
+    ultimaColumna = ws.Cells( _
+                        fila, _
+                        ws.Columns.Count).End(xlToLeft).Column
+
+    For columna = 1 To ultimaColumna
+
+        If NormalizarTexto( _
+                CStr(ws.Cells(fila, columna).Value)) = buscado Then
+
+            BuscarColumnaTextoExacto = columna
+            Exit Function
+
+        End If
+
+    Next columna
+
+    BuscarColumnaTextoExacto = 0
+
+End Function
+
+Private Function EsFechaProyecto( _
+    ByVal valor As Variant) As Boolean
+
+    Dim fecha As Date
+
+    If IsError(valor) Or IsEmpty(valor) Then Exit Function
+    If Not IsDate(valor) Then Exit Function
+
+    fecha = CDate(valor)
+
+    If Year(fecha) < 2015 Or Year(fecha) > 2100 Then
+        Exit Function
+    End If
+
+    EsFechaProyecto = True
+
+End Function
+
+Private Function NormalizarTexto( _
+    ByVal texto As String) As String
+
+    Dim resultado As String
+
+    resultado = UCase$(Trim$(texto))
+    resultado = Replace(resultado, Chr$(160), " ")
+    resultado = Replace(resultado, vbCr, " ")
+    resultado = Replace(resultado, vbLf, " ")
+
+    resultado = Replace(resultado, "Á", "A")
+    resultado = Replace(resultado, "É", "E")
+    resultado = Replace(resultado, "Í", "I")
+    resultado = Replace(resultado, "Ó", "O")
+    resultado = Replace(resultado, "Ú", "U")
+    resultado = Replace(resultado, "Ü", "U")
+
+    Do While InStr(resultado, "  ") > 0
+        resultado = Replace(resultado, "  ", " ")
+    Loop
+
+    NormalizarTexto = resultado
+
+End Function
+
+Private Function CalcularTIRAnual(ByVal rangoFlujos As Range) As Variant
+
+    Dim tirMensual As Double
+
+    On Error GoTo SinTIR
+
+    tirMensual = Application.WorksheetFunction.IRR(rangoFlujos, 0.02)
+    CalcularTIRAnual = (1 + tirMensual) ^ 12 - 1
+    Exit Function
+
+SinTIR:
+    Err.Clear
+    CalcularTIRAnual = Empty
+
+End Function
+
+Private Function NormalizarMes(ByVal valor As Variant) As Date
+
+    If Not IsDate(valor) Then
+        Err.Raise vbObjectError + 1050, "NormalizarMes", _
+                  "El valor recibido no es una fecha válida."
+    End If
+
+    NormalizarMes = DateSerial(Year(CDate(valor)), Month(CDate(valor)), 1)
+
+End Function
+
+Private Function NumeroSeguro(ByVal valor As Variant) As Double
+
+    If IsError(valor) Then
+        NumeroSeguro = 0
+        Exit Function
+    End If
+
+    If IsNull(valor) Or IsEmpty(valor) Then
+        NumeroSeguro = 0
+        Exit Function
+    End If
+
+    If Len(Trim$(CStr(valor))) = 0 Then
+        NumeroSeguro = 0
+    ElseIf IsNumeric(valor) Then
+        NumeroSeguro = CDbl(valor)
+    Else
+        NumeroSeguro = 0
+    End If
+
+End Function
+
+Private Function LetraColumna(ByVal numeroColumna As Long) As String
+
+    Dim resultado As String
+    Dim residuo As Long
+
+    Do While numeroColumna > 0
+        residuo = (numeroColumna - 1) Mod 26
+        resultado = Chr$(65 + residuo) & resultado
+        numeroColumna = (numeroColumna - residuo - 1) \ 26
+    Loop
+
+    LetraColumna = resultado
+
+End Function
