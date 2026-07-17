@@ -1,0 +1,161 @@
+Option Explicit
+
+Sub preparaPresentacion()
+
+    Dim pptApp As PowerPoint.Application
+    Dim pptPres As PowerPoint.Presentation
+    Dim pptSlide As PowerPoint.Slide
+    Dim pptRect As PowerPoint.Shape
+       
+    Dim cellRange As Excel.Range
+    
+    Dim rango As Range
+    Dim matriz1 As Variant
+    
+    Dim wsCfg As Worksheet
+    Set wsCfg = ThisWorkbook.Worksheets("Presentacion")
+    
+    Set rango = wsCfg.Range(wsCfg.Cells(6, 4), wsCfg.Cells(16, 9))
+    matriz1 = rango.Value
+    
+    Debug.Print rango.Address
+    Debug.Print rango.Rows.Count & " x " & rango.Columns.Count
+    
+    '-----------------------------
+    'Comprobar si PowerPoint está abierto y en caso de no estarlo abrirlo
+    On Error Resume Next
+    Set pptApp = GetObject("", "PowerPoint.Application")
+    Err.Clear
+    If pptApp Is Nothing Then Set pptApp = CreateObject(class:="PowerPoint.Application")
+    On Error GoTo 0
+    
+    pptApp.Visible = True
+    pptApp.Activate
+
+    'Crear una nueva presentación de PowerPoint
+    Set pptPres = pptApp.Presentations.Add
+
+    '----------------------------- DIAPOSITIVA 1 -----------------------------
+    
+    'Agregamos una nueva diapositiva
+    Set pptSlide = pptPres.Slides.Add(1, ppLayoutBlank)
+    
+    'Selecciona la nueva diapositiva
+    pptSlide.Select
+    
+    'Agregamos el rectángulo
+    Call AgregarRectangulos(pptSlide)
+    
+    Dim i As Integer
+    
+    For i = 1 To rango.Rows.Count
+    
+        Set cellRange = Worksheets(matriz1(i, 1)).Range(matriz1(i, 2))
+         
+        cellRange.CopyPicture Appearance:=xlScreen, Format:=xlPicture
+        pptSlide.Shapes.PasteSpecial(DataType:=ppPasteEnhancedMetafile).Select
+        
+        pptApp.ActiveWindow.Selection.ShapeRange.LockAspectRatio = msoFalse
+        
+        pptApp.ActiveWindow.Selection.ShapeRange.Top = matriz1(i, 3)
+        pptApp.ActiveWindow.Selection.ShapeRange.Left = matriz1(i, 4)
+        
+        pptApp.ActiveWindow.Selection.ShapeRange.Height = matriz1(i, 5)
+        pptApp.ActiveWindow.Selection.ShapeRange.Width = matriz1(i, 6)
+        
+        pptApp.ActiveWindow.Selection.ShapeRange.Line.Weight = 1
+        
+    Next i
+    
+    Set cellRange = Nothing
+    Set rango = Nothing
+    '----------------------------- DIAPOSITIVA 2 -----------------------------
+    
+    Set rango = wsCfg.Range(wsCfg.Cells(25, 4), wsCfg.Cells(26, 9))
+    Dim matriz2 As Variant
+    matriz2 = rango.Value
+    
+    Debug.Print rango.Address
+    Debug.Print rango.Rows.Count & " x " & rango.Columns.Count
+    
+    'Agregamos una nueva diapositiva
+    Set pptSlide = pptPres.Slides.Add(pptPres.Slides.Count + 1, ppLayoutBlank)
+    
+    'Selecciona la nueva diapositiva
+    pptSlide.Select
+    
+    'Agregamos el rectángulo
+    Call AgregarRectangulos(pptSlide)
+    
+    For i = 1 To rango.Rows.Count
+    
+        Set cellRange = Worksheets(matriz2(i, 1)).Range(matriz2(i, 2))
+         
+        cellRange.CopyPicture Appearance:=xlScreen, Format:=xlPicture
+        pptSlide.Shapes.PasteSpecial(DataType:=ppPasteEnhancedMetafile).Select
+        
+        pptApp.ActiveWindow.Selection.ShapeRange.LockAspectRatio = msoFalse
+        
+        pptApp.ActiveWindow.Selection.ShapeRange.Top = matriz2(i, 3)
+        pptApp.ActiveWindow.Selection.ShapeRange.Left = matriz2(i, 4)
+        
+        pptApp.ActiveWindow.Selection.ShapeRange.Height = matriz2(i, 5)
+        pptApp.ActiveWindow.Selection.ShapeRange.Width = matriz2(i, 6)
+        
+        pptApp.ActiveWindow.Selection.ShapeRange.Line.Weight = 1
+        
+    Next i
+    
+    Set cellRange = Nothing
+    Set rango = Nothing
+    
+    '----------------------------- DIAPOSITIVA 3 -----------------------------
+
+    Set rango = wsCfg.Range(wsCfg.Cells(35, 4), wsCfg.Cells(38, 9))
+    Dim matriz3 As Variant
+    matriz3 = rango.Value
+    
+    Set pptSlide = pptPres.Slides.Add(pptPres.Slides.Count + 1, ppLayoutBlank)
+    pptSlide.Select
+    
+    Call AgregarRectangulos(pptSlide)
+    
+    For i = 1 To rango.Rows.Count
+    
+        Set cellRange = Worksheets(matriz3(i, 1)).Range(matriz3(i, 2))
+         
+        cellRange.CopyPicture Appearance:=xlScreen, Format:=xlPicture
+        pptSlide.Shapes.PasteSpecial(DataType:=ppPasteEnhancedMetafile).Select
+        
+        pptApp.ActiveWindow.Selection.ShapeRange.LockAspectRatio = msoFalse
+        
+        pptApp.ActiveWindow.Selection.ShapeRange.Top = matriz3(i, 3)
+        pptApp.ActiveWindow.Selection.ShapeRange.Left = matriz3(i, 4)
+        
+        pptApp.ActiveWindow.Selection.ShapeRange.Height = matriz3(i, 5)
+        pptApp.ActiveWindow.Selection.ShapeRange.Width = matriz3(i, 6)
+        
+        pptApp.ActiveWindow.Selection.ShapeRange.Line.Weight = 1
+    
+    Next i
+    
+    Set cellRange = Nothing
+    Set rango = Nothing
+
+End Sub
+
+Sub AgregarRectangulos(pptSlide As PowerPoint.Slide)
+
+    Dim pptRect As PowerPoint.Shape
+    
+    Set pptRect = pptSlide.Shapes.AddShape(msoShapeRectangle, 0, 0, 960, 40)
+    pptRect.Line.DashStyle = msoLineSolid
+    pptRect.Line.BackColor.RGB = RGB(0, 0, 0)
+    pptRect.Fill.ForeColor.RGB = RGB(0, 0, 0)
+
+    'Set pptRect = pptSlide.Shapes.AddShape(msoShapeRectangle, 0, 500, 960, 40)
+    'pptRect.Line.DashStyle = msoLineSolid
+    'pptRect.Line.BackColor.RGB = RGB(0, 0, 0)
+    'pptRect.Fill.ForeColor.RGB = RGB(0, 0, 0)
+
+End Sub

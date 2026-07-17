@@ -1,10 +1,17 @@
 import os
 from dotenv import load_dotenv
 import psycopg2
-from datetime import datetime
+from datetime import datetime, timedelta
 
 base_dir = os.getcwd()
 timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+
+# Fecha de cierre mensual
+def obtener_ultimo_dia_mes_anterior():
+    hoy = datetime.today()
+    primer_dia_mes_actual = hoy.replace(day=1)
+    ultimo_dia_mes_anterior = primer_dia_mes_actual - timedelta(days=1)
+    return ultimo_dia_mes_anterior.strftime("%d/%m/%Y")
 
 
 # =====================================================================================================
@@ -17,6 +24,7 @@ timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 # Proyectos Vigentes
 
 PROYECTOS_VIGENTES_COBRANZAS = ["Prada", "Beyond", "Venecia"]    # Colocar los proyectos vigentes.
+                                                                 #
 
 # Inicio de Reporte
 
@@ -24,7 +32,7 @@ FECHA_INICIO_REPORTE = "01/01/2024"  # Fecha de Inicio del reporte.
 
 # Fecha de cierre mensual
 
-FECHA_CORTE_REPORTE = "30/06/2026"   # Fecha de corte para el reporte.
+FECHA_CORTE_REPORTE = obtener_ultimo_dia_mes_anterior()   # Fecha de corte para el reporte.
 
 
 PROYECTO = {
