@@ -33,8 +33,13 @@ Public Sub Actualizar_FC()
     Dim eventosAnteriores As Boolean
     Dim alertasAnteriores As Boolean
     Dim estadoCapturado As Boolean
+
     Dim mensajeError As String
     Dim mensajeExito As String
+    Dim etapaActual As String
+    Dim numeroError As Long
+    Dim origenError As String
+    Dim detalleError As String
 
     On Error GoTo ManejarError
 
@@ -45,6 +50,10 @@ Public Sub Actualizar_FC()
     estadoCapturado = True
 
     Set wb = ThisWorkbook
+
+    etapaActual = "Validando las hojas requeridas"
+    ValidarHojasRequeridas wb
+
     Set wsKPI = wb.Worksheets(HOJA_KPI)
     Set wsKPIFlujo = wb.Worksheets(HOJA_KPI_FLUJO)
     Set wsFlujo = wb.Worksheets(HOJA_FLUJO)
@@ -52,24 +61,35 @@ Public Sub Actualizar_FC()
     Set wsVentas = wb.Worksheets(HOJA_VENTAS)
     Set wsIngresos = wb.Worksheets(HOJA_INGRESOS)
 
+    etapaActual = "Validando el mes de corte"
+
     If Not IsDate(wsKPI.Range("E2").Value) Then
+
         Err.Raise vbObjectError + 1000, "Actualizar_FC", _
-                  "La celda E2 de la hoja '" & HOJA_KPI & "' no contiene un mes válido."
+                  "La celda E2 de la hoja '" & HOJA_KPI & _
+                  "' no contiene una fecha válida."
+
     End If
 
     mesCorte = NormalizarMes(wsKPI.Range("E2").Value)
+
+    etapaActual = "Buscando el mes en la plantilla"
 
     columnaMes = BuscarColumnaMes( _
                     wsKPI, _
                     FILA_MESES_KPI, _
                     mesCorte, _
                     COLUMNA_INICIO_KPI, _
-                    wsKPI.Cells(FILA_MESES_KPI, wsKPI.Columns.Count).End(xlToLeft).Column)
+                    wsKPI.Cells( _
+                        FILA_MESES_KPI, _
+                        wsKPI.Columns.Count).End(xlToLeft).Column)
 
     If columnaMes = 0 Then
+
         Err.Raise vbObjectError + 1001, "Actualizar_FC", _
                   "No se encontró " & Format(mesCorte, "mmmm yyyy") & _
-                  " en la fila 2 de la hoja '" & HOJA_KPI & "'."
+                  " en la fila de meses de la hoja '" & HOJA_KPI & "'."
+
     End If
 
     Application.ScreenUpdating = False
@@ -77,54 +97,313 @@ Public Sub Actualizar_FC()
     Application.DisplayAlerts = False
     Application.Calculation = xlCalculationManual
     Application.Cursor = xlWait
-    Application.StatusBar = "Actualizando información de " & Format(mesCorte, "mmmm yyyy") & "..."
+    Application.StatusBar = _
+        "Actualizando información de " & _
+        Format(mesCorte, "mmmm yyyy") & "..."
 
-    'Asegura que las hojas fuente estén calculadas antes de guardar la fotografía mensual.
+    etapaActual = "Calculando las hojas fuente"
     Application.CalculateFull
 
-    ActualizarIndicadores wsKPI, wsFlujo, wsProyeccion, columnaMes, mesCorte
-    ActualizarGanttResumen wsKPI, columnaMes, mesCorte
-    ActualizarVentasProyectadas wsKPI, wsVentas, wsIngresos, columnaMes, mesCorte
-    ActualizarFilasSoporteGraficos wsKPI, columnaMes, mesCorte
+    etapaActual = "Actualizando los indicadores financieros"
+    ActualizarIndicadores _
+        wsKPI, _
+        wsFlujo, _
+        wsProyeccion, _
+        columnaMes, _
+        mesCorte
 
-    filaMesFlujo = ActualizarHistoricoFlujo(wsKPIFlujo, wsFlujo, mesCorte)
+    etapaActual = "Actualizando las fechas del Gantt"
+    ActualizarGanttResumen _
+        wsKPI, _
+        columnaMes, _
+        mesCorte
 
+    etapaActual = "Actualizando las ventas"
+    ActualizarVentasProyectadas _
+        wsKPI, _
+        wsVentas, _
+        wsIngresos, _
+        columnaMes, _
+        mesCorte
+
+    etapaActual = "Actualizando la información para los gráficos"
+    ActualizarFilasSoporteGraficos _
+        wsKPI, _
+        columnaMes, _
+        mesCorte
+
+    etapaActual = "Actualizando el histórico del flujo"
+    filaMesFlujo = ActualizarHistoricoFlujo( _
+                        wsKPIFlujo, _
+                        wsFlujo, _
+                        mesCorte)
+
+    etapaActual = "Calculando los resultados actualizados"
     wsKPI.Calculate
     wsKPIFlujo.Calculate
 
-    ActualizarGraficos wsKPI, columnaMes
+    etapaActual = "Validando los resultados"
+    ValidarResultadosActualizados _
+        wsKPI, _
+        columnaMes, _
+        wsKPIFlujo, _
+        filaMesFlujo
 
-    mensajeExito = "Actualización terminada." & vbCrLf & vbCrLf & _
-                    "Mes: " & Format(mesCorte, "mmmm yyyy") & vbCrLf & _
-                    "KPIs indicadores: columna " & LetraColumna(columnaMes) & vbCrLf & _
-                    "KPIs Flujo: fila " & filaMesFlujo
+    etapaActual = "Actualizando los gráficos"
+    ActualizarGraficos _
+        wsKPI, _
+        columnaMes
+
+    mensajeExito = _
+        "Actualización realizada con éxito." & vbCrLf & vbCrLf & _
+        "Mes actualizado: " & _
+        StrConv(Format(mesCorte, "mmmm yyyy"), vbProperCase)
 
 Salir:
+
     Application.CutCopyMode = False
     Application.StatusBar = False
     Application.Cursor = xlDefault
 
     If estadoCapturado Then
+
         Application.ScreenUpdating = pantallaAnterior
         Application.EnableEvents = eventosAnteriores
         Application.DisplayAlerts = alertasAnteriores
         Application.Calculation = calculoAnterior
+
     End If
 
     If Len(mensajeError) > 0 Then
-        MsgBox mensajeError, vbExclamation, "No se pudo actualizar"
+
+        MsgBox _
+            mensajeError, _
+            vbCritical, _
+            "Error en la actualización"
+
     ElseIf Len(mensajeExito) > 0 Then
-        MsgBox mensajeExito, vbInformation, "Actualizar FC"
+
+        MsgBox _
+            mensajeExito, _
+            vbInformation, _
+            "Actualización exitosa"
+
     End If
 
     Exit Sub
 
 ManejarError:
-    mensajeError = "Se detuvo la actualización." & vbCrLf & vbCrLf & _
-                   "Detalle: " & Err.Description
+
+    numeroError = Err.Number
+    origenError = Err.Source
+    detalleError = Err.Description
+
+    mensajeError = _
+        "No se pudo completar la actualización." & vbCrLf & vbCrLf & _
+        "Etapa: " & etapaActual & vbCrLf
+
+    If mesCorte > 0 Then
+
+        mensajeError = mensajeError & _
+            "Mes: " & _
+            StrConv(Format(mesCorte, "mmmm yyyy"), vbProperCase) & _
+            vbCrLf
+
+    End If
+
+    mensajeError = mensajeError & _
+        "Error: " & detalleError & vbCrLf & _
+        "Código: " & CStr(numeroError)
+
+    If Len(origenError) > 0 Then
+
+        mensajeError = mensajeError & vbCrLf & _
+            "Origen: " & origenError
+
+    End If
+
+    mensajeError = mensajeError & vbCrLf & vbCrLf & _
+        "Revise la información indicada y vuelva a ejecutar la macro."
+
     Resume Salir
 
 End Sub
+
+Private Sub ValidarHojasRequeridas( _
+    ByVal wb As Workbook)
+
+    Dim hojasRequeridas As Variant
+    Dim nombreHoja As Variant
+    Dim hojasFaltantes As String
+
+    hojasRequeridas = Array( _
+        HOJA_KPI, _
+        HOJA_KPI_FLUJO, _
+        HOJA_FLUJO, _
+        HOJA_PROYECCION, _
+        HOJA_VENTAS, _
+        HOJA_INGRESOS)
+
+    For Each nombreHoja In hojasRequeridas
+
+        If Not HojaExiste(wb, CStr(nombreHoja)) Then
+
+            If Len(hojasFaltantes) > 0 Then
+                hojasFaltantes = hojasFaltantes & ", "
+            End If
+
+            hojasFaltantes = hojasFaltantes & _
+                              "'" & CStr(nombreHoja) & "'"
+
+        End If
+
+    Next nombreHoja
+
+    If Len(hojasFaltantes) > 0 Then
+
+        Err.Raise vbObjectError + 1100, _
+                  "ValidarHojasRequeridas", _
+                  "No se encontraron las siguientes hojas: " & _
+                  hojasFaltantes & "." & vbCrLf & _
+                  "Verifique que los nombres coincidan exactamente."
+
+    End If
+
+End Sub
+
+Private Function HojaExiste( _
+    ByVal wb As Workbook, _
+    ByVal nombreHoja As String) As Boolean
+
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = wb.Worksheets(nombreHoja)
+    On Error GoTo 0
+
+    HojaExiste = Not ws Is Nothing
+
+End Function
+
+Private Sub ValidarResultadosActualizados( _
+    ByVal wsKPI As Worksheet, _
+    ByVal columnaMes As Long, _
+    ByVal wsKPIFlujo As Worksheet, _
+    ByVal filaMesFlujo As Long)
+
+    Dim rangoKPI As Range
+    Dim rangoFlujo As Range
+    Dim ultimaColumnaFlujo As Long
+    Dim detalle As String
+
+    Set rangoKPI = wsKPI.Range( _
+                        wsKPI.Cells(2, columnaMes), _
+                        wsKPI.Cells(124, columnaMes))
+
+    detalle = BuscarErrorEnRango(rangoKPI)
+
+    If Len(detalle) > 0 Then
+
+        Err.Raise vbObjectError + 1101, _
+                  "ValidarResultadosActualizados", _
+                  "Se encontró un error en la hoja '" & _
+                  wsKPI.Name & "': " & detalle
+
+    End If
+
+    ultimaColumnaFlujo = wsKPIFlujo.Cells( _
+                                filaMesFlujo, _
+                                wsKPIFlujo.Columns.Count).End(xlToLeft).Column
+
+    If ultimaColumnaFlujo < 2 Then
+        ultimaColumnaFlujo = 2
+    End If
+
+    Set rangoFlujo = wsKPIFlujo.Range( _
+                            wsKPIFlujo.Cells(filaMesFlujo, 2), _
+                            wsKPIFlujo.Cells( _
+                                filaMesFlujo, _
+                                ultimaColumnaFlujo))
+
+    detalle = BuscarErrorEnRango(rangoFlujo)
+
+    If Len(detalle) > 0 Then
+
+        Err.Raise vbObjectError + 1102, _
+                  "ValidarResultadosActualizados", _
+                  "Se encontró un error en la hoja '" & _
+                  wsKPIFlujo.Name & "': " & detalle
+
+    End If
+
+End Sub
+
+Private Function BuscarErrorEnRango( _
+    ByVal rango As Range) As String
+
+    Dim celda As Range
+
+    On Error Resume Next
+
+    For Each celda In rango.Cells
+
+        If IsError(celda.Value) Then
+
+            BuscarErrorEnRango = _
+                "celda " & celda.Address(False, False) & _
+                " con el valor " & NombreErrorExcel(celda.Value) & "."
+
+            Exit Function
+
+        End If
+
+    Next celda
+
+    On Error GoTo 0
+
+    BuscarErrorEnRango = vbNullString
+
+End Function
+
+Private Function NombreErrorExcel( _
+    ByVal valor As Variant) As String
+
+    If Not IsError(valor) Then
+
+        NombreErrorExcel = CStr(valor)
+        Exit Function
+
+    End If
+
+    Select Case CLng(valor)
+
+        Case xlErrDiv0
+            NombreErrorExcel = "#DIV/0!"
+
+        Case xlErrNA
+            NombreErrorExcel = "#N/A"
+
+        Case xlErrName
+            NombreErrorExcel = "#NAME?"
+
+        Case xlErrNull
+            NombreErrorExcel = "#NULL!"
+
+        Case xlErrNum
+            NombreErrorExcel = "#NUM!"
+
+        Case xlErrRef
+            NombreErrorExcel = "#REF!"
+
+        Case xlErrValue
+            NombreErrorExcel = "#VALUE!"
+
+        Case Else
+            NombreErrorExcel = "error de Excel"
+
+    End Select
+
+End Function
 
 Private Sub ActualizarIndicadores( _
     ByVal wsKPI As Worksheet, _
