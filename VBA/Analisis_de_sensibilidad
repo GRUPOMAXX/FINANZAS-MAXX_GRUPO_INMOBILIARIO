@@ -1,0 +1,485 @@
+Option Explicit
+
+'======================================================================
+' PRECIO POR m2 vs COSTO DE CONSTRUCCIÓN POR m2
+'
+' Cuadro TIR d.i.:
+'   C73       resultado actual de la TIR
+'   D73:H73   precios por m2
+'   C74:C78   costos de construcción por m2
+'   D74:H78   matriz de TIR
+'
+' Cuadro Margen d.i.:
+'   N60       resultado actual del margen
+'   O60:S60   precios por m2
+'   N61:N65   costos de construcción por m2
+'   O61:S65   matriz de margen
+'
+' Los dos cuadros se calculan en la misma ejecución y con exactamente
+' los mismos escenarios. Además, se completa O74:O78 con la fecha ubicada
+' debajo de "Inicio de Obra" en la fila 3 de la hoja Ingresos para cada
+' velocidad de N74:N78. La columna TIR de ese tercer cuadro no se modifica.
+'
+' La macro modifica únicamente la venta total y los egresos proyectados
+' de construcción; también redistribuye egresos proyectados para que el
+' IGV positivo tienda a cero.
+'======================================================================
+
+Private Const SH_S As String = "Sensibilidad"
+Private Const SH_P As String = "Proyección"
+Private Const CELDA_VENTA As String = "F3"
+Private Const CELDA_VELOCIDAD As String = "F5"
+Private Const CELDA_TIR As String = "C73"
+Private Const R_PRECIOS As String = "D73:H73"
+Private Const R_COSTOS As String = "C74:C78"
+Private Const R_RESULTADOS As String = "D74:H78"
+
+Private Const CELDA_MARGEN As String = "N60"
+Private Const R_PRECIOS_MARGEN As String = "O60:S60"
+Private Const R_COSTOS_MARGEN As String = "N61:N65"
+Private Const R_RESULTADOS_MARGEN As String = "O61:S65"
+
+'Análisis de Fecha de Inicio de Obra
+Private Const SH_INGRESOS As String = "Ingresos"
+Private Const R_VELOCIDADES_FECHA As String = "N74:N78"
+Private Const R_RESULTADOS_FECHA As String = "O74:O78"
+Private Const FILA_ETIQUETA_INICIO As Long = 2
+Private Const FILA_FECHA_INICIO As Long = 3
+Private Const ETIQUETA_INICIO_OBRA As String = "Inicio de Obra"
+
+Private Const FILA_COSTO As Long = 78
+Private Const FILA_IGV As Long = 189
+Private Const COL_REAL_INI As Long = 13
+Private Const COL_REAL_FIN As Long = 36
+Private Const COL_PROY_INI As Long = 37
+Private Const COL_PROY_FIN As Long = 110
+Private Const IGV_META As Double = 100
+Private Const MOV_MIN As Double = 100
+Private Const MAX_AJUSTES As Long = 60
+
+Public Sub Sensibilidad()
+
+    Dim s As Worksheet, p As Worksheet
+    Dim precios As Variant, costos As Variant, r() As Variant, m() As Variant
+    Dim respaldo As Variant, respaldoBase As Variant
+    Dim ventaBase As Double, velocidadBase As Double
+    Dim precioBase As Double, costoBase As Double
+    Dim totalBase As Double, realBase As Double, proyBase As Double
+    Dim objetivoProy As Double, factor As Double, tir As Double, margen As Double
+    Dim i As Long, j As Long, incTIR As Long, incMargen As Long
+    Dim calcAnt As XlCalculation, evAnt As Boolean, scAnt As Boolean
+    Dim estadoAnt As Variant, ok As Boolean, msg As String
+
+    On Error GoTo EH
+
+    Set s = ThisWorkbook.Worksheets(SH_S)
+    Set p = ThisWorkbook.Worksheets(SH_P)
+
+    Application.CalculateFull
+
+    precios = s.Range(R_PRECIOS).Value2
+    costos = s.Range(R_COSTOS).Value2
+
+    precioBase = N(precios(1, 3))
+    costoBase = N(costos(3, 1))
+    ventaBase = N(s.Range(CELDA_VENTA).Value2)
+    velocidadBase = N(s.Range(CELDA_VELOCIDAD).Value2)
+
+    If precioBase <= 0 Then Err.Raise 5, , "F73 no contiene el precio base."
+    If costoBase <= 0 Then Err.Raise 5, , "C76 no contiene el costo por m2 base."
+    If ventaBase <= 0 Then Err.Raise 5, , "F3 no contiene la venta base."
+
+    respaldo = p.Range("AK31:DF168").Formula
+    respaldoBase = respaldo
+
+    realBase = SumaFila(p, FILA_COSTO, COL_REAL_INI, COL_REAL_FIN)
+    proyBase = SumaFila(p, FILA_COSTO, COL_PROY_INI, COL_PROY_FIN)
+    totalBase = realBase + proyBase
+
+    If proyBase <= 0 Then
+        Err.Raise 5, , "Proyección!AK78:DF78 no tiene egresos proyectados."
+    End If
+
+    ReDim r(1 To 5, 1 To 5)
+    ReDim m(1 To 5, 1 To 5)
+
+    'Mantener los mismos escenarios en ambos cuadros.
+    s.Range(R_PRECIOS_MARGEN).Value = precios
+    s.Range(R_COSTOS_MARGEN).Value = costos
+
+    calcAnt = Application.Calculation
+    evAnt = Application.EnableEvents
+    scAnt = Application.ScreenUpdating
+    estadoAnt = Application.StatusBar
+
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+
+    For i = 1 To 5
+        For j = 1 To 5
+
+            Application.StatusBar = "Sensibilidad TIR y Margen: " & _
+                                    ((i - 1) * 5 + j) & " de 25"
+
+            p.Range("AK31:DF168").Formula = respaldo
+
+            s.Range(CELDA_VENTA).Value2 = _
+                ventaBase * N(precios(1, j)) / precioBase
+            s.Range(CELDA_VELOCIDAD).Value2 = velocidadBase
+
+            objetivoProy = _
+                totalBase * N(costos(i, 1)) / costoBase - realBase
+
+            If objetivoProy < 0 Then
+                Err.Raise 5, , "El costo del escenario es menor que el costo ya ejecutado."
+            End If
+
+            factor = objetivoProy / proyBase
+            EscalarFilaCosto p, factor
+
+            Application.CalculateFull
+            IGVCero p
+            Application.CalculateFull
+
+            tir = LeerTIR(s)
+            margen = LeerMargen(s)
+
+            r(i, j) = tir
+            m(i, j) = margen
+
+            If i = 3 And j = 3 Then
+                respaldoBase = p.Range("AK31:DF168").Formula
+            End If
+
+        Next j
+    Next i
+
+    s.Range(R_RESULTADOS).Value = r
+    s.Range(R_RESULTADOS_MARGEN).Value = m
+
+    FormatoSeguro s.Range(R_RESULTADOS)
+    FormatoSeguro s.Range(R_RESULTADOS_MARGEN)
+
+    incTIR = Validar(r, precios, costos)
+    incMargen = Validar(m, precios, costos)
+
+    p.Range("AK31:DF168").Formula = respaldoBase
+    s.Range(CELDA_VENTA).Value2 = ventaBase
+    s.Range(CELDA_VELOCIDAD).Value2 = velocidadBase
+
+    'Completar el tercer cuadro únicamente con las fechas de inicio de obra.
+    CompletarFechasInicioObra s, velocidadBase
+
+    ok = True
+
+FIN:
+    On Error Resume Next
+
+    If Not ok Then
+        p.Range("AK31:DF168").Formula = respaldo
+        s.Range(CELDA_VENTA).Value2 = ventaBase
+        s.Range(CELDA_VELOCIDAD).Value2 = velocidadBase
+    End If
+
+    Application.Calculation = calcAnt
+    Application.EnableEvents = evAnt
+    Application.ScreenUpdating = scAnt
+    Application.StatusBar = estadoAnt
+    Application.CalculateFull
+    On Error GoTo 0
+
+    If Not ok Then
+        MsgBox "El análisis de sensibilidad no se pudo completar." & _
+               vbCrLf & vbCrLf & _
+               "Detalle del error:" & vbCrLf & msg, _
+               vbCritical, "Error en análisis de sensibilidad"
+
+    ElseIf incTIR = 0 And incMargen = 0 Then
+        MsgBox "El análisis de sensibilidad se realizó con éxito.", _
+               vbInformation, "Análisis de sensibilidad"
+
+    Else
+        MsgBox "El análisis de sensibilidad se completó con observaciones." & _
+               vbCrLf & vbCrLf & _
+               "Errores de tendencia en TIR: " & incTIR & vbCrLf & _
+               "Errores de tendencia en Margen d.i.: " & incMargen, _
+               vbExclamation, "Observaciones del análisis de sensibilidad"
+    End If
+    Exit Sub
+
+EH:
+    msg = "Error " & Err.Number & ": " & Err.Description
+    Resume FIN
+
+End Sub
+
+Private Sub EscalarFilaCosto(ByVal p As Worksheet, ByVal factor As Double)
+
+    Dim c As Long
+
+    For c = COL_PROY_INI To COL_PROY_FIN
+        With p.Cells(FILA_COSTO, c)
+            If Not .HasFormula And Not .MergeCells And IsNumeric(.Value2) Then
+                .Value2 = CDbl(.Value2) * factor
+            End If
+        End With
+    Next c
+
+End Sub
+
+Private Sub IGVCero(ByVal p As Worksheet)
+
+    Dim filas As Variant, malos As Object
+    Dim c As Long, q As Long, f As Variant, k As Long
+    Dim antes As Double, despues As Double
+    Dim vo As Double, vd As Double, mover As Double
+    Dim clave As String, aceptado As Boolean
+
+    filas = Array(78, 79, 77, 43, 50, 85, 102, 106, _
+                  91, 93, 96, 124, 125, 136, 149)
+
+    For c = COL_PROY_INI To COL_PROY_FIN
+
+        Set malos = CreateObject("Scripting.Dictionary")
+
+        For k = 1 To MAX_AJUSTES
+
+            antes = N(p.Cells(FILA_IGV, c).Value2)
+            If antes <= IGV_META Then Exit For
+
+            aceptado = False
+
+            For Each f In filas
+                If DestinoOK(p.Cells(CLng(f), c)) Then
+                    For q = c + 1 To COL_PROY_FIN
+
+                        clave = CStr(f) & "|" & CStr(c) & "|" & CStr(q)
+
+                        If Not malos.Exists(clave) Then
+                            If OrigenOK(p.Cells(CLng(f), q)) Then
+
+                                vo = N(p.Cells(CLng(f), q).Value2)
+                                vd = N(p.Cells(CLng(f), c).Value2)
+
+                                mover = (antes - IGV_META) * 6.56
+                                If mover < MOV_MIN Then mover = MOV_MIN
+                                If mover > vo Then mover = vo
+
+                                p.Cells(CLng(f), q).Value2 = vo - mover
+                                p.Cells(CLng(f), c).Value2 = vd + mover
+                                Application.CalculateFull
+
+                                despues = N(p.Cells(FILA_IGV, c).Value2)
+
+                                If despues < antes - 1 Then
+                                    aceptado = True
+                                    Exit For
+                                Else
+                                    p.Cells(CLng(f), q).Value2 = vo
+                                    p.Cells(CLng(f), c).Value2 = vd
+                                    Application.CalculateFull
+                                    malos.Add clave, True
+                                End If
+                            End If
+                        End If
+                    Next q
+                End If
+
+                If aceptado Then Exit For
+            Next f
+
+            If Not aceptado Then Exit For
+        Next k
+    Next c
+
+End Sub
+
+Private Function Validar(ByVal r As Variant, ByVal p As Variant, ByVal c As Variant) As Long
+
+    Dim i As Long, j As Long, x As Long
+
+    For i = 1 To 5
+        For j = 2 To 5
+            If N(p(1, j)) > N(p(1, j - 1)) Then
+                If N(r(i, j)) <= N(r(i, j - 1)) Then x = x + 1
+            Else
+                If N(r(i, j)) >= N(r(i, j - 1)) Then x = x + 1
+            End If
+        Next j
+    Next i
+
+    For j = 1 To 5
+        For i = 2 To 5
+            If N(c(i, 1)) > N(c(i - 1, 1)) Then
+                If N(r(i, j)) >= N(r(i - 1, j)) Then x = x + 1
+            Else
+                If N(r(i, j)) <= N(r(i - 1, j)) Then x = x + 1
+            End If
+        Next i
+    Next j
+
+    Validar = x
+
+End Function
+
+Private Function LeerTIR(ByVal s As Worksheet) As Double
+
+    If IsNumeric(s.Range(CELDA_TIR).Value2) Then
+        LeerTIR = CDbl(s.Range(CELDA_TIR).Value2)
+    Else
+        Err.Raise 5, , "Sensibilidad!C73 no contiene una TIR válida."
+    End If
+
+End Function
+
+Private Function LeerMargen(ByVal s As Worksheet) As Double
+
+    If IsNumeric(s.Range(CELDA_MARGEN).Value2) Then
+        LeerMargen = CDbl(s.Range(CELDA_MARGEN).Value2)
+    Else
+        Err.Raise 5, , "Sensibilidad!N60 no contiene un Margen d.i. válido."
+    End If
+
+End Function
+
+Private Function SumaFila(ByVal p As Worksheet, ByVal f As Long, _
+                          ByVal ci As Long, ByVal cf As Long) As Double
+
+    Dim c As Long
+
+    For c = ci To cf
+        SumaFila = SumaFila + N(p.Cells(f, c).Value2)
+    Next c
+
+End Function
+
+Private Function OrigenOK(ByVal x As Range) As Boolean
+
+    If x.HasFormula Or x.MergeCells Or IsError(x.Value) Then Exit Function
+    If IsNumeric(x.Value2) Then OrigenOK = (CDbl(x.Value2) > MOV_MIN)
+
+End Function
+
+Private Function DestinoOK(ByVal x As Range) As Boolean
+
+    If x.HasFormula Or x.MergeCells Or IsError(x.Value) Then Exit Function
+    DestinoOK = (IsEmpty(x.Value2) Or x.Value2 = "" Or IsNumeric(x.Value2))
+
+End Function
+
+Private Function N(ByVal x As Variant) As Double
+
+    If Not IsError(x) And IsNumeric(x) Then N = CDbl(x)
+
+End Function
+
+Private Sub CompletarFechasInicioObra( _
+    ByVal s As Worksheet, _
+    ByVal velocidadOriginal As Double)
+
+    Dim ingresos As Worksheet
+    Dim velocidades As Variant
+    Dim fechas() As Variant
+    Dim i As Long
+    Dim columnaInicio As Long
+    Dim valorFecha As Variant
+
+    Set ingresos = ThisWorkbook.Worksheets(SH_INGRESOS)
+
+    velocidades = s.Range(R_VELOCIDADES_FECHA).Value2
+    ReDim fechas(1 To UBound(velocidades, 1), 1 To 1)
+
+    s.Range(R_RESULTADOS_FECHA).ClearContents
+
+    For i = 1 To UBound(velocidades, 1)
+
+        If Not IsNumeric(velocidades(i, 1)) Then
+            Err.Raise 5, , _
+                "La velocidad de " & _
+                s.Range(R_VELOCIDADES_FECHA).Cells(i, 1).Address(False, False) & _
+                " no es numérica."
+        End If
+
+        Application.StatusBar = _
+            "Calculando fecha de inicio de obra: velocidad " & velocidades(i, 1)
+
+        s.Range(CELDA_VELOCIDAD).Value2 = CDbl(velocidades(i, 1))
+        Application.CalculateFull
+
+        columnaInicio = BuscarColumnaInicioObra(ingresos)
+
+        If columnaInicio = 0 Then
+            fechas(i, 1) = "No encontrado"
+        Else
+            valorFecha = ingresos.Cells(FILA_FECHA_INICIO, columnaInicio).Value
+
+            If IsDate(valorFecha) Or IsNumeric(valorFecha) Then
+                fechas(i, 1) = valorFecha
+            Else
+                fechas(i, 1) = "Sin fecha"
+            End If
+        End If
+
+    Next i
+
+    s.Range(R_RESULTADOS_FECHA).Value = fechas
+    FormatoFechaSeguro s.Range(R_RESULTADOS_FECHA)
+
+    s.Range(CELDA_VELOCIDAD).Value2 = velocidadOriginal
+    Application.CalculateFull
+
+End Sub
+
+Private Function BuscarColumnaInicioObra( _
+    ByVal ingresos As Worksheet) As Long
+
+    Dim ultimaColumna As Long
+    Dim columna As Long
+    Dim texto As String
+
+    ultimaColumna = ingresos.Cells( _
+                        FILA_ETIQUETA_INICIO, _
+                        ingresos.Columns.Count).End(xlToLeft).Column
+
+    For columna = 1 To ultimaColumna
+
+        texto = Trim$(CStr( _
+                    ingresos.Cells(FILA_ETIQUETA_INICIO, columna).Value))
+
+        If StrComp(texto, ETIQUETA_INICIO_OBRA, vbTextCompare) = 0 Then
+            BuscarColumnaInicioObra = columna
+            Exit Function
+        End If
+
+    Next columna
+
+End Function
+
+Private Sub FormatoFechaSeguro(ByVal x As Range)
+
+    On Error Resume Next
+
+    x.NumberFormat = "mmm-yy"
+
+    If Err.Number <> 0 Then
+        Err.Clear
+        x.NumberFormatLocal = "mmm-aa"
+    End If
+
+    Err.Clear
+    On Error GoTo 0
+
+End Sub
+
+Private Sub FormatoSeguro(ByVal x As Range)
+
+    On Error Resume Next
+    x.NumberFormat = "0.00%"
+    If Err.Number <> 0 Then
+        Err.Clear
+        x.NumberFormatLocal = "0,00%"
+    End If
+    On Error GoTo 0
+
+End Sub

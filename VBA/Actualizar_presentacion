@@ -423,6 +423,12 @@ Private Sub ActualizarIndicadores( _
     Dim filaFinObra As Long
     Dim filaInicioDevolucion As Long
 
+    Dim celdaTIRDI As Range
+    Dim celdaEquity As Range
+    Dim celdaInicioObra As Range
+    Dim celdaFinObra As Range
+    Dim celdaInicioDevolucion As Range
+
     Dim clave As String
     Dim valorFila11 As Double
     Dim fechaFinObra As Variant
@@ -486,15 +492,27 @@ Private Sub ActualizarIndicadores( _
     wsKPI.Cells(27, columnaMes).Value = ValorPorEtiqueta( _
         wsFlujo, 3, 4, "Margen di")
 
-    filaTIRDI = BuscarFilaTextoExacto(wsFlujo, 3, "TIR di")
+    Set celdaTIRDI = BuscarCeldaTextoExacto( _
+                            wsFlujo, _
+                            "TIR di")
 
-    filaEquity = BuscarFilaTextoHaciaArriba( _
-        wsFlujo, _
-        3, _
-        "Devolución de Utilidad", _
-        filaTIRDI - 1)
+    If celdaTIRDI Is Nothing Then
 
-    If filaEquity = 0 Then
+        Err.Raise vbObjectError + 1060, "ActualizarIndicadores", _
+                  "No se encontró 'TIR di' en la hoja '" & _
+                  wsFlujo.Name & "'."
+
+    End If
+
+    filaTIRDI = celdaTIRDI.Row
+
+    Set celdaEquity = BuscarCeldaTextoHaciaArriba( _
+                            wsFlujo, _
+                            celdaTIRDI.Column, _
+                            "Devolución de Utilidad", _
+                            filaTIRDI - 1)
+
+    If celdaEquity Is Nothing Then
 
         Err.Raise vbObjectError + 1060, "ActualizarIndicadores", _
                   "No se encontró la Devolución de Utilidad " & _
@@ -502,8 +520,10 @@ Private Sub ActualizarIndicadores( _
 
     End If
 
+    filaEquity = celdaEquity.Row
+
     wsKPI.Cells(29, columnaMes).Value = _
-        NumeroSeguro(wsFlujo.Cells(filaEquity, 4).Value)
+        NumeroSeguro(celdaEquity.Offset(0, 1).Value)
 
     '=============================================================
     ' EGRESOS: REAL + PROYECTADO
@@ -615,24 +635,21 @@ Private Sub ActualizarIndicadores( _
     '
     'También se buscan mediante las etiquetas de la hoja Flujo.
     '=============================================================
-    filaInicioObra = BuscarFilaTextoExacto( _
-        wsFlujo, _
-        3, _
-        "Obra: Fecha inicio de obra")
+    Set celdaInicioObra = BuscarCeldaTextoExacto( _
+                                wsFlujo, _
+                                "Obra: Fecha inicio de obra")
 
-    filaFinObra = BuscarFilaTextoExacto( _
-        wsFlujo, _
-        3, _
-        "Obra: Fecha fin de obra")
+    Set celdaFinObra = BuscarCeldaTextoExacto( _
+                            wsFlujo, _
+                            "Obra: Fecha fin de obra")
 
-    filaInicioDevolucion = BuscarFilaTextoExacto( _
-        wsFlujo, _
-        3, _
-        "Devolución: Fecha inicio de devolución")
+    Set celdaInicioDevolucion = BuscarCeldaTextoExacto( _
+                                    wsFlujo, _
+                                    "Devolución: Fecha inicio de devolución")
 
-    If filaInicioObra = 0 Or _
-       filaFinObra = 0 Or _
-       filaInicioDevolucion = 0 Then
+    If celdaInicioObra Is Nothing Or _
+       celdaFinObra Is Nothing Or _
+       celdaInicioDevolucion Is Nothing Then
 
         Err.Raise vbObjectError + 1065, "ActualizarIndicadores", _
                   "No se encontraron todas las fechas del Gantt " & _
@@ -640,15 +657,21 @@ Private Sub ActualizarIndicadores( _
 
     End If
 
-    wsKPI.Cells(72, columnaMes).Value = _
-        wsFlujo.Cells(filaInicioObra, 4).Value
+    filaInicioObra = celdaInicioObra.Row
+    filaFinObra = celdaFinObra.Row
+    filaInicioDevolucion = celdaInicioDevolucion.Row
 
-    fechaFinObra = wsFlujo.Cells(filaFinObra, 4).Value
+    wsKPI.Cells(72, columnaMes).Value = _
+        celdaInicioObra.Offset(0, 1).Value
+
+    fechaFinObra = celdaFinObra.Offset(0, 1).Value
 
     If Not IsDate(fechaFinObra) Then
 
         Err.Raise vbObjectError + 1066, "ActualizarIndicadores", _
-                  "La fecha de fin de obra no es válida."
+                  "La fecha de fin de obra ubicada junto a '" & _
+                  celdaFinObra.Address(False, False) & _
+                  "' no es válida."
 
     End If
 
@@ -658,7 +681,7 @@ Private Sub ActualizarIndicadores( _
         DateAdd("m", 1, CDate(fechaFinObra))
 
     wsKPI.Cells(74, columnaMes).Value = _
-        wsFlujo.Cells(filaInicioDevolucion, 4).Value
+        celdaInicioDevolucion.Offset(0, 1).Value
 
 End Sub
 
@@ -1164,6 +1187,9 @@ Private Function ActualizarHistoricoFlujo( _
     Dim valores() As Variant
     Dim tirAnual As Variant
 
+    Dim celdaTIRDI As Range
+    Dim celdaFlujoInversionista As Range
+
     'Encabezado mensual de KPIs Flujo.
     filaEncabezado = DetectarFilaMeses( _
                         wsKPIFlujo, _
@@ -1295,16 +1321,25 @@ Private Function ActualizarHistoricoFlujo( _
     'Ubica la fila mensual de Flujo y la fila del inversionista DI.
     filaMesesFlujo = DetectarFilaMeses(wsFlujo, 1, 5)
 
-    filaTIRDI = BuscarFilaTextoExacto( _
-                    wsFlujo, _
-                    3, _
-                    "TIR di")
+    Set celdaTIRDI = BuscarCeldaTextoExacto( _
+                            wsFlujo, _
+                            "TIR di")
 
-    filaFlujoInversionista = BuscarFilaTextoHaciaArriba( _
-                                wsFlujo, _
-                                3, _
-                                "Flujo del Inversionista", _
-                                filaTIRDI - 1)
+    If Not celdaTIRDI Is Nothing Then
+
+        filaTIRDI = celdaTIRDI.Row
+
+        Set celdaFlujoInversionista = BuscarCeldaTextoHaciaArriba( _
+                                        wsFlujo, _
+                                        celdaTIRDI.Column, _
+                                        "Flujo del Inversionista", _
+                                        filaTIRDI - 1)
+
+    End If
+
+    If Not celdaFlujoInversionista Is Nothing Then
+        filaFlujoInversionista = celdaFlujoInversionista.Row
+    End If
 
     If filaMesesFlujo = 0 Or filaFlujoInversionista = 0 Then
 
@@ -2097,16 +2132,34 @@ Private Function ValorPorEtiqueta( _
     Optional ByVal filaInicial As Long = 1, _
     Optional ByVal filaFinal As Long = 0) As Double
 
-    Dim fila As Long
+    Dim celdaEtiqueta As Range
+    Dim celdaValor As Range
 
-    fila = BuscarFilaTextoExacto( _
-                ws, _
-                columnaEtiqueta, _
-                etiqueta, _
-                filaInicial, _
-                filaFinal)
+    'Primero se intenta la ubicación recibida para mantener
+    'compatibilidad con las plantillas anteriores.
+    If columnaEtiqueta > 0 Then
 
-    If fila = 0 Then
+        Set celdaEtiqueta = BuscarCeldaTextoExactoEnColumna( _
+                                ws, _
+                                columnaEtiqueta, _
+                                etiqueta, _
+                                filaInicial, _
+                                filaFinal)
+
+    End If
+
+    'Si no está allí, se busca en todas las columnas utilizadas.
+    If celdaEtiqueta Is Nothing Then
+
+        Set celdaEtiqueta = BuscarCeldaTextoExacto( _
+                                ws, _
+                                etiqueta, _
+                                filaInicial, _
+                                filaFinal)
+
+    End If
+
+    If celdaEtiqueta Is Nothing Then
 
         Err.Raise vbObjectError + 1090, "ValorPorEtiqueta", _
                   "No se encontró '" & etiqueta & "' en la hoja '" & _
@@ -2114,10 +2167,143 @@ Private Function ValorPorEtiqueta( _
 
     End If
 
-    ValorPorEtiqueta = NumeroSeguro( _
-                            ws.Cells( _
-                                fila, _
-                                columnaValor).Value)
+    'El valor se encuentra inmediatamente a la derecha del concepto.
+    'Ejemplo:
+    'Palace: concepto en C y valor en D.
+    'Venecia: concepto en D y valor en E.
+    Set celdaValor = celdaEtiqueta.Offset(0, 1)
+
+    If IsError(celdaValor.Value) Then
+
+        Err.Raise vbObjectError + 1091, "ValorPorEtiqueta", _
+                  "El valor ubicado en " & _
+                  celdaValor.Address(False, False) & _
+                  ", junto a '" & etiqueta & "', contiene un error."
+
+    End If
+
+    ValorPorEtiqueta = NumeroSeguro(celdaValor.Value)
+
+End Function
+
+Private Function BuscarCeldaTextoExacto( _
+    ByVal ws As Worksheet, _
+    ByVal textoBuscado As String, _
+    Optional ByVal filaInicial As Long = 1, _
+    Optional ByVal filaFinal As Long = 0) As Range
+
+    Dim fila As Long
+    Dim columna As Long
+    Dim ultimaFila As Long
+    Dim primeraColumna As Long
+    Dim ultimaColumna As Long
+    Dim buscado As String
+
+    If filaInicial < 1 Then filaInicial = 1
+
+    ultimaFila = ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1
+    primeraColumna = ws.UsedRange.Column
+    ultimaColumna = ws.UsedRange.Column + ws.UsedRange.Columns.Count - 1
+
+    If filaFinal <= 0 Or filaFinal > ultimaFila Then
+        filaFinal = ultimaFila
+    End If
+
+    buscado = NormalizarTexto(textoBuscado)
+
+    For fila = filaInicial To filaFinal
+
+        For columna = primeraColumna To ultimaColumna
+
+            If NormalizarTexto( _
+                    CStr(ws.Cells(fila, columna).Value)) = buscado Then
+
+                Set BuscarCeldaTextoExacto = _
+                    ws.Cells(fila, columna)
+
+                Exit Function
+
+            End If
+
+        Next columna
+
+    Next fila
+
+    Set BuscarCeldaTextoExacto = Nothing
+
+End Function
+
+Private Function BuscarCeldaTextoExactoEnColumna( _
+    ByVal ws As Worksheet, _
+    ByVal columna As Long, _
+    ByVal textoBuscado As String, _
+    Optional ByVal filaInicial As Long = 1, _
+    Optional ByVal filaFinal As Long = 0) As Range
+
+    Dim fila As Long
+    Dim ultimaFila As Long
+    Dim buscado As String
+
+    If filaInicial < 1 Then filaInicial = 1
+
+    ultimaFila = ws.Cells( _
+                    ws.Rows.Count, _
+                    columna).End(xlUp).Row
+
+    If filaFinal <= 0 Or filaFinal > ultimaFila Then
+        filaFinal = ultimaFila
+    End If
+
+    buscado = NormalizarTexto(textoBuscado)
+
+    For fila = filaInicial To filaFinal
+
+        If NormalizarTexto( _
+                CStr(ws.Cells(fila, columna).Value)) = buscado Then
+
+            Set BuscarCeldaTextoExactoEnColumna = _
+                ws.Cells(fila, columna)
+
+            Exit Function
+
+        End If
+
+    Next fila
+
+    Set BuscarCeldaTextoExactoEnColumna = Nothing
+
+End Function
+
+Private Function BuscarCeldaTextoHaciaArriba( _
+    ByVal ws As Worksheet, _
+    ByVal columna As Long, _
+    ByVal textoBuscado As String, _
+    ByVal filaInicial As Long) As Range
+
+    Dim fila As Long
+    Dim buscado As String
+
+    If filaInicial > ws.Rows.Count Then
+        filaInicial = ws.Rows.Count
+    End If
+
+    buscado = NormalizarTexto(textoBuscado)
+
+    For fila = filaInicial To 1 Step -1
+
+        If NormalizarTexto( _
+                CStr(ws.Cells(fila, columna).Value)) = buscado Then
+
+            Set BuscarCeldaTextoHaciaArriba = _
+                ws.Cells(fila, columna)
+
+            Exit Function
+
+        End If
+
+    Next fila
+
+    Set BuscarCeldaTextoHaciaArriba = Nothing
 
 End Function
 
@@ -2595,3 +2781,5 @@ Private Function LetraColumna(ByVal numeroColumna As Long) As String
     LetraColumna = resultado
 
 End Function
+
+
