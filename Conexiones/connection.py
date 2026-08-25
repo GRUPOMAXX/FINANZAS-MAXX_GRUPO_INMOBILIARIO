@@ -32,7 +32,7 @@ FECHA_INICIO_REPORTE = "01/01/2024"  # Fecha de Inicio del reporte.
 
 # Fecha de cierre mensual
 
-FECHA_CORTE_REPORTE = "30/06/2026"   # Fecha de corte para el reporte.
+FECHA_CORTE_REPORTE = "24/08/2026"   # Fecha de corte para el reporte.
 
 
 PROYECTO = {

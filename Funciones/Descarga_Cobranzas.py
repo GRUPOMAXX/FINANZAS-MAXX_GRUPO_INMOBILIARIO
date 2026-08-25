@@ -78,6 +78,10 @@ NOMBRE_HOJA_BASE = "Base_Cobranzas"
 NOMBRE_BASE_CONSOLIDADA = "Base_Cobranzas_Consolidada.xlsx"
 NOMBRE_BASE_AJUSTADA = "Base_Cobranzas_Ajustado.xlsx"
 
+# Archivo maestro para obtener las áreas de cada inmueble
+NOMBRE_ARCHIVO_UNIDADES = "Unidades-Inmobiliarias.xlsx"
+NOMBRE_HOJA_UNIDADES = "Stock Comercial"
+
 NOMBRE_HOJA_BASE_ORIGINAL_AJUSTADA = "Base_Original"
 NOMBRE_HOJA_BASE_AJUSTADA = "Base_Ajustada"
 
@@ -96,6 +100,8 @@ COLUMNAS_NUMERO_FIJAS = [
 COLUMNAS_NUMERO_CON_INDICE = [
     "PrecioLista",
     "PrecioVenta",
+    "AreaTechada",
+    "AreaLibre",
 ]
 
 EXTENSIONES_DESCARGA = [".csv", ".xlsx", ".xls"]
@@ -113,6 +119,15 @@ def normalizar_texto(texto):
         caracter for caracter in texto
         if not unicodedata.combining(caracter)
     )
+
+# Normaliza el código del inmueble para poder cruzarlo entre bases
+# Ejemplo: "E 14 - D 11" -> "E14D11"
+def normalizar_codigo_inmueble(codigo):
+    if pd.isna(codigo):
+        return ""
+
+    codigo = normalizar_texto(codigo)
+    return re.sub(r"[^A-Z0-9]", "", codigo)
 
 # Convierte la fecha de texto a numero
 def convertir_fecha(fecha_texto: str) -> date:
@@ -706,6 +721,8 @@ def ordenar_columnas_cobranzas(columnas_union):
         "Nombre_Tipo_Construccion",
         "TipoInmueble",
         "NroInmueble",
+        "AreaTechada",
+        "AreaLibre",
         "PrecioLista",
         "PrecioVenta",
     ]
@@ -786,6 +803,204 @@ def agregar_columnas_auxiliares(df, archivo, columnas_finales):
     return df[columnas_finales]
 
 
+
+# Agrega el área techada y el área libre de cada inmueble desde Stock Comercial
+def agregar_areas_inmuebles(base):
+    ruta_unidades = BASE_DIR / "Flujo" / "Input" / NOMBRE_ARCHIVO_UNIDADES
+
+    if not ruta_unidades.exists():
+        raise FileNotFoundError(
+            f"No se encontró el archivo de unidades inmobiliarias:\n{ruta_unidades}"
+        )
+
+    print("\n====================================")
+    print("AGREGANDO ÁREAS DE INMUEBLES")
+    print("====================================")
+    print(f"Archivo fuente: {ruta_unidades.name}")
+    print(f"Hoja fuente: {NOMBRE_HOJA_UNIDADES}")
+
+    stock = pd.read_excel(
+        ruta_unidades,
+        sheet_name=NOMBRE_HOJA_UNIDADES,
+        engine="openpyxl",
+        dtype=str,
+        keep_default_na=False,
+    )
+
+    validar_columnas(
+        stock,
+        [
+            "Proyecto",
+            "TipoInmueble",
+            "NroInmuebleActual",
+            "Areatechada",
+            "AreaLibre",
+        ],
+        "cruce de áreas con Stock Comercial",
+    )
+
+    # Normaliza las llaves del archivo maestro.
+    stock["_Proyecto_Cruce"] = stock["Proyecto"].apply(normalizar_texto)
+    stock["_TipoInmueble_Cruce"] = stock["TipoInmueble"].apply(normalizar_texto)
+    stock["_NroInmueble_Cruce"] = stock["NroInmuebleActual"].apply(
+        normalizar_codigo_inmueble
+    )
+
+    # Las áreas deben quedar como valores numéricos.
+    stock["Areatechada"] = convertir_columna_numero(stock["Areatechada"])
+    stock["AreaLibre"] = convertir_columna_numero(stock["AreaLibre"])
+
+    columnas_llave = [
+        "_Proyecto_Cruce",
+        "_TipoInmueble_Cruce",
+        "_NroInmueble_Cruce",
+    ]
+
+    # Si Stock Comercial tiene la misma unidad repetida, conserva una sola fila.
+    # Antes se valida que esas repeticiones no tengan áreas diferentes.
+    duplicados = stock.loc[
+        stock.duplicated(subset=columnas_llave, keep=False)
+        & (stock["_NroInmueble_Cruce"] != "")
+    ].copy()
+
+    if not duplicados.empty:
+        conflictos = (
+            duplicados.groupby(columnas_llave, dropna=False)[
+                ["Areatechada", "AreaLibre"]
+            ]
+            .nunique(dropna=False)
+        )
+
+        conflictos = conflictos[
+            (conflictos["Areatechada"] > 1)
+            | (conflictos["AreaLibre"] > 1)
+        ]
+
+        if not conflictos.empty:
+            raise ValueError(
+                "Se encontraron unidades repetidas en Stock Comercial con "
+                "áreas diferentes. Revisa Proyecto + TipoInmueble + "
+                "NroInmuebleActual antes de continuar."
+            )
+
+    stock_lookup = stock.drop_duplicates(
+        subset=columnas_llave,
+        keep="first",
+    ).copy()
+
+    mapa_area_techada = stock_lookup.set_index(columnas_llave)[
+        "Areatechada"
+    ].to_dict()
+
+    mapa_area_libre = stock_lookup.set_index(columnas_llave)[
+        "AreaLibre"
+    ].to_dict()
+
+    base_area = base.copy()
+
+    validar_columnas(
+        base_area,
+        ["Proyecto"],
+        "cruce de áreas en la base de cobranzas",
+    )
+
+    proyecto_normalizado = base_area["Proyecto"].apply(normalizar_texto)
+
+    # Detecta automáticamente NroInmueble_1, NroInmueble_2, etc.
+    indices = []
+
+    for columna in base_area.columns:
+        coincidencia = re.match(r"^NroInmueble_(\d+)$", str(columna))
+
+        if coincidencia:
+            indices.append(int(coincidencia.group(1)))
+
+    indices = sorted(set(indices))
+
+    if not indices:
+        raise ValueError(
+            "No se encontraron columnas NroInmueble_1, NroInmueble_2, etc. "
+            "para realizar el cruce de áreas."
+        )
+
+    total_con_inmueble = 0
+    total_encontrados = 0
+
+    for indice in indices:
+        columna_tipo = f"TipoInmueble_{indice}"
+        columna_inmueble = f"NroInmueble_{indice}"
+        columna_area_techada = f"AreaTechada_{indice}"
+        columna_area_libre = f"AreaLibre_{indice}"
+
+        if columna_tipo not in base_area.columns:
+            print(
+                f"⚠️ No existe {columna_tipo}; se omite el cruce del inmueble {indice}."
+            )
+            continue
+
+        tipo_normalizado = base_area[columna_tipo].apply(normalizar_texto)
+        inmueble_normalizado = base_area[columna_inmueble].apply(
+            normalizar_codigo_inmueble
+        )
+
+        llaves = list(
+            zip(
+                proyecto_normalizado,
+                tipo_normalizado,
+                inmueble_normalizado,
+            )
+        )
+
+        base_area[columna_area_techada] = [
+            mapa_area_techada.get(llave, pd.NA)
+            if llave[2] != ""
+            else pd.NA
+            for llave in llaves
+        ]
+
+        base_area[columna_area_libre] = [
+            mapa_area_libre.get(llave, pd.NA)
+            if llave[2] != ""
+            else pd.NA
+            for llave in llaves
+        ]
+
+        con_inmueble = inmueble_normalizado.ne("")
+        encontrados = (
+            con_inmueble
+            & (
+                base_area[columna_area_techada].notna()
+                | base_area[columna_area_libre].notna()
+            )
+        )
+
+        cantidad_con_inmueble = int(con_inmueble.sum())
+        cantidad_encontrados = int(encontrados.sum())
+        cantidad_no_encontrados = cantidad_con_inmueble - cantidad_encontrados
+
+        total_con_inmueble += cantidad_con_inmueble
+        total_encontrados += cantidad_encontrados
+
+        print(
+            f"Inmueble {indice}: "
+            f"{cantidad_encontrados} de {cantidad_con_inmueble} encontrados"
+        )
+
+        if cantidad_no_encontrados > 0:
+            print(
+                f"⚠️ Inmueble {indice}: "
+                f"{cantidad_no_encontrados} registros sin coincidencia de área."
+            )
+
+    print("------------------------------------")
+    print(
+        f"Total de inmuebles con área encontrada: "
+        f"{total_encontrados} de {total_con_inmueble}"
+    )
+
+    return base_area
+
+
 def formatear_hoja_base(ws):
     encabezados = {
         celda.value: celda.column
@@ -827,6 +1042,16 @@ def generar_base_cobranzas_consolidada():
         print(f"{archivo.name}: {len(df)} filas, {len(df.columns)} columnas")
 
     base_consolidada = pd.concat(bases, ignore_index=True)
+    base_consolidada = base_consolidada[columnas_finales]
+    base_consolidada = convertir_tipos_base(base_consolidada)
+
+    # Agrega AreaTechada_n y AreaLibre_n desde Unidades-Inmobiliarias.xlsx
+    base_consolidada = agregar_areas_inmuebles(base_consolidada)
+
+    # Reordena las columnas para que las áreas queden junto al inmueble correspondiente
+    columnas_finales = ordenar_columnas_cobranzas(
+        list(base_consolidada.columns)
+    )
     base_consolidada = base_consolidada[columnas_finales]
     base_consolidada = convertir_tipos_base(base_consolidada)
 
