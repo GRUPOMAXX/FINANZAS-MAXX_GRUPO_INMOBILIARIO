@@ -1,3 +1,10 @@
+# Codigo para generar reporte de cobranzas
+
+# Hecho por Eduardo Huamani Acosta      07/09/26
+
+# Este codigo sirve para generar el reporte de cobranzas según el proyecto y el cliente. 
+
+
 from pathlib import Path
 import sys
 import shutil
@@ -34,6 +41,18 @@ ACTUALIZAR_BASE = True
 NOMBRE_REPORTE_CIERRE = "Reporte_Cierre_Mes.xlsx"
 
 BORRAR_REPORTES_INDIVIDUALES = True
+
+
+# ============================================================
+# ORDEN DE HOJAS
+# ============================================================
+
+HOJAS_FIJAS = [
+    "Reporte_Proyecto",
+    "Reporte_General",
+    "Reporte_Cliente",
+]
+
 
 
 # ============================================================
@@ -202,6 +221,44 @@ def obtener_nombre_hoja_unico(wb, nombre_base):
 
         contador += 1
 
+
+# ============================================================
+# ORDENAR HOJAS DEL REPORTE
+# ============================================================
+
+def ordenar_hojas_reporte(wb):
+    """
+    Orden final:
+
+    1. Reporte_General
+    2. Reporte_Proyecto
+    3. Reporte_Cliente
+    4. Todas las demás hojas, manteniendo su orden actual
+    """
+
+    hojas_ordenadas = []
+
+    # --------------------------------------------------------
+    # 1. HOJAS FIJAS
+    # --------------------------------------------------------
+
+    for nombre in HOJAS_FIJAS:
+        if nombre in wb.sheetnames:
+            hojas_ordenadas.append(wb[nombre])
+
+    # --------------------------------------------------------
+    # 2. RESTO DE HOJAS
+    # --------------------------------------------------------
+
+    for ws in wb.worksheets:
+        if ws.title not in HOJAS_FIJAS:
+            hojas_ordenadas.append(ws)
+
+    # --------------------------------------------------------
+    # 3. APLICAR ORDEN
+    # --------------------------------------------------------
+
+    wb._sheets = hojas_ordenadas
 
 def copiar_hoja_entre_libros(ws_origen, wb_destino, nombre_destino):
     """
@@ -377,8 +434,9 @@ def unir_reportes_excel(ruta_cobranzas, ruta_gerencia, ruta_reporte_final):
     2. Abre Reporte_Cierre_Mes.xlsx con openpyxl.
     3. Abre Reporte_para_Gerencia.xlsx con openpyxl.
     4. Copia todas las hojas visibles de gerencia.
-    5. Guarda el archivo final.
-    6. Verifica que las hojas estén guardadas.
+    5. Ordena las hojas.
+    6. Guarda el archivo final.
+    7. Verifica que las hojas estén guardadas.
     """
 
     ruta_cobranzas = Path(ruta_cobranzas).resolve()
@@ -438,6 +496,12 @@ def unir_reportes_excel(ruta_cobranzas, ruta_gerencia, ruta_reporte_final):
             raise RuntimeError(
                 "❌ No se encontró ninguna hoja visible en Reporte_para_Gerencia.xlsx."
             )
+
+        # ====================================================
+        # ORDENAR HOJAS
+        # ====================================================
+
+        ordenar_hojas_reporte(wb_final)
 
         wb_final.save(ruta_reporte_final)
 

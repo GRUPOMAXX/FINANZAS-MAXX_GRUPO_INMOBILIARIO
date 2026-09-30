@@ -23,7 +23,7 @@ def obtener_ultimo_dia_mes_anterior():
 
 # Proyectos Vigentes
 
-PROYECTOS_VIGENTES_COBRANZAS = ["Prada", "Beyond", "Venecia"]    # Colocar los proyectos vigentes.
+PROYECTOS_VIGENTES_COBRANZAS = ["Prada", "Beyond", "Venecia", "Palace"]    # Colocar los proyectos vigentes.
                                                                  #
 
 # Inicio de Reporte
@@ -32,13 +32,14 @@ FECHA_INICIO_REPORTE = "01/01/2024"  # Fecha de Inicio del reporte.
 
 # Fecha de cierre mensual
 
-FECHA_CORTE_REPORTE = "31/08/2026"   # Fecha de corte para el reporte.
+FECHA_CORTE_REPORTE = "30/09/2026"   # Fecha de corte para el reporte.
 
 
 PROYECTO = {
     "RESIDENCIAL PRADA": "Prada",
     "RESIDENCIAL BEYOND": "Beyond",
     "RESIDENCIAL VENECIA": "Venecia",
+    "RESIDENCIAL PALACE 700": "Palace"
 }
 
 

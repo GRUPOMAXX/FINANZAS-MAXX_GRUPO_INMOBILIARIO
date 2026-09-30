@@ -465,8 +465,8 @@ Private Sub ActualizarIndicadores( _
         wsFlujo, 3, 4, "Gastos Financieros", 1, 50)
 
     wsKPI.Cells(15, columnaMes).Value = -( _
-        ValorPorEtiqueta(wsFlujo, 3, 4, "Impuestos", 1, 50) + _
-        ValorPorEtiqueta(wsFlujo, 3, 4, "IGV", 1, 50))
+        ValorPorEtiqueta(wsFlujo, 3, 4, "IGV", 1, 50) + _
+        ValorPorEtiqueta(wsFlujo, 3, 4, "Impuesto a la Renta", 1, 50))
 
     valorFila11 = NumeroSeguro(wsKPI.Cells(11, columnaMes).Value)
 
@@ -568,6 +568,8 @@ Private Sub ActualizarIndicadores( _
     End If
 
     wsKPI.Cells(48, columnaMes).Value = _
+        NumeroSeguro(wsProyeccion.Cells( _
+            BuscarFilaTextoExacto(wsProyeccion, 3, "3.1."), 8).Value) + _
         NumeroSeguro(wsProyeccion.Cells(filaGastoFinanciero, 8).Value)
 
     wsKPI.Cells(32, columnaMes).Value = Application.Sum( _
@@ -623,6 +625,8 @@ Private Sub ActualizarIndicadores( _
     Next fila
 
     wsKPI.Cells(68, columnaMes).Value = _
+        NumeroSeguro(wsProyeccion.Cells( _
+            BuscarFilaTextoExacto(wsProyeccion, 3, "3.1."), 9).Value) + _
         NumeroSeguro(wsProyeccion.Cells(filaGastoFinanciero, 9).Value)
 
     wsKPI.Cells(50, columnaMes).Value = Application.Sum( _
@@ -928,7 +932,7 @@ Private Sub ActualizarVentasProyectadas( _
         Set wsFuenteProyectada = wsIngresos
     End If
 
-    columnaInicialFuente = PrimeraColumnaFecha( _
+    columnaInicialFuente = primeraColumnaFecha( _
                                 wsFuenteProyectada, _
                                 filaMesProyectado)
 
@@ -969,7 +973,7 @@ Private Sub ActualizarVentasProyectadas( _
                                 wsIngresos, _
                                 filaMesIngresos, _
                                 fecha, _
-                                PrimeraColumnaFecha( _
+                                primeraColumnaFecha( _
                                     wsIngresos, filaMesIngresos), _
                                 UltimaColumnaFecha( _
                                     wsIngresos, filaMesIngresos))
@@ -1204,7 +1208,7 @@ Private Function ActualizarHistoricoFlujo( _
 
     End If
 
-    columnaInicioDatos = PrimeraColumnaFecha( _
+    columnaInicioDatos = primeraColumnaFecha( _
                                 wsKPIFlujo, _
                                 filaEncabezado)
 
@@ -1373,7 +1377,7 @@ Private Function ActualizarHistoricoFlujo( _
                                 wsFlujo, _
                                 filaMesesFlujo, _
                                 fecha, _
-                                PrimeraColumnaFecha( _
+                                primeraColumnaFecha( _
                                     wsFlujo, _
                                     filaMesesFlujo), _
                                 ultimaColumnaFlujo)
@@ -1441,17 +1445,14 @@ Private Sub ActualizarGraficos( _
     Dim columnaInicial As Long
     Dim columnaFinal As Long
 
-    'El archivo original trabaja con una ventana móvil de 7 meses.
-    'Ejemplo:
-    'Junio  -> H:N
-    'Julio  -> I:O
-    'Agosto -> J:P
+    'Ventana móvil de últimos 12 meses.
+    'Incluye el mes actualizado y retrocede hasta 11 meses.
+    'Si no existen 12 meses disponibles, inicia desde el primer mes.
     columnaFinal = columnaMes
-    columnaInicial = columnaFinal - 6
-
-    If columnaInicial < COLUMNA_INICIO_KPI Then
-        columnaInicial = COLUMNA_INICIO_KPI
-    End If
+    columnaInicial = ObtenerInicioGrafico12Meses( _
+                        wsKPI, _
+                        FILA_MESES_KPI, _
+                        columnaFinal)
 
     ActualizarRangosGrafico wsKPI, "tir", 83, columnaInicial, columnaFinal, 84, 85
 
@@ -1459,7 +1460,7 @@ Private Sub ActualizarGraficos( _
     'Serie 1 = P I
     'Serie 2 = Equity
     'Serie 3 = R + P
-    ActualizarRangosGrafico wsKPI, "moic", 87, columnaInicial, columnaFinal, 88, 90, 89
+    ActualizarRangosGrafico wsKPI, "moic", 87, columnaInicial, columnaFinal, 88, 89
 
     ActualizarRangosGrafico wsKPI, "utilidad", 92, columnaInicial, columnaFinal, 93, 94
     ActualizarRangosGrafico wsKPI, "margen", 96, columnaInicial, columnaFinal, 97, 98
@@ -1484,6 +1485,7 @@ Private Sub ActualizarRangosGrafico( _
     Dim grafico As Chart
     Dim serieGrafico As Series
     Dim etiquetasNuevas As Collection
+    Dim valoresEtiquetas As Collection
 
     Dim numeroSerie As Long
     Dim indice As Long
@@ -1515,6 +1517,7 @@ Private Sub ActualizarRangosGrafico( _
 
     Set grafico = objetoGrafico.Chart
     Set etiquetasNuevas = New Collection
+    Set valoresEtiquetas = New Collection
 
     'No se agregan ni eliminan series.
     'Se conservan colores, grosores, leyendas, ejes,
@@ -1591,6 +1594,8 @@ Private Sub ActualizarRangosGrafico( _
                 If serieGrafico.Points(ultimoPunto).HasDataLabel Then
                     etiquetasNuevas.Add _
                         serieGrafico.Points(ultimoPunto).DataLabel
+
+                    valoresEtiquetas.Add CDbl(valorUltimoPunto)
                 End If
 
             End If
@@ -1611,7 +1616,7 @@ Private Sub ActualizarRangosGrafico( _
     grafico.Refresh
     DoEvents
 
-    AlinearEtiquetasUltimoMes etiquetasNuevas
+    AlinearEtiquetasUltimoMes etiquetasNuevas, valoresEtiquetas
 
     'Quitar únicamente las líneas que conectan las etiquetas
     'con los puntos de la gráfica.
@@ -1787,187 +1792,88 @@ Private Sub MoverEtiquetaAlUltimoMes( _
 End Sub
 
 Private Sub AlinearEtiquetasUltimoMes( _
-    ByVal etiquetas As Collection)
+    ByVal etiquetas As Collection, _
+    ByVal valores As Collection)
 
-    Dim etiquetasGrafico() As DataLabel
-    Dim centroVerticalOriginal() As Double
-    Dim procesada() As Boolean
-    Dim indicesGrupo() As Long
+    Dim i As Long
+    Dim j As Long
+    Dim valorTemporal As Double
+    Dim etiquetaTemporal As DataLabel
+    Dim valoresOrdenados() As Double
+    Dim etiquetasOrdenadas() As DataLabel
 
-    Dim cantidad As Long
-    Dim indice As Long
-    Dim otroIndice As Long
-    Dim indiceGrupo As Long
-    Dim cantidadGrupo As Long
-
-    Dim centroHorizontal As Double
-    Dim centroHorizontalActual As Double
-    Dim centroVerticalGrupo As Double
-    Dim inicioVertical As Double
-    Dim alturaTotalGrupo As Double
-    Dim distanciaVertical As Double
-    Dim limiteAgrupacion As Double
-
-    Dim margenHorizontal As Double
-    Dim margenVertical As Double
+    Dim diferencia As Double
+    Dim separacion As Double
 
     If etiquetas Is Nothing Then Exit Sub
+    If valores Is Nothing Then Exit Sub
     If etiquetas.Count = 0 Then Exit Sub
+    If etiquetas.Count <> valores.Count Then Exit Sub
 
-    cantidad = etiquetas.Count
-    margenHorizontal = 12
-    margenVertical = 4
+    separacion = 5
 
-    ReDim etiquetasGrafico(1 To cantidad)
-    ReDim centroVerticalOriginal(1 To cantidad)
-    ReDim procesada(1 To cantidad)
-    ReDim indicesGrupo(1 To cantidad)
+    ReDim valoresOrdenados(1 To valores.Count)
+    ReDim etiquetasOrdenadas(1 To etiquetas.Count)
 
-    On Error Resume Next
+    For i = 1 To valores.Count
+        valoresOrdenados(i) = CDbl(valores(i))
+        Set etiquetasOrdenadas(i) = etiquetas(i)
+    Next i
 
-    centroHorizontal = -1
+    'Ordena únicamente la posición visual:
+    'mayor valor arriba, menor valor abajo.
+    'No modifica series ni leyendas.
+    For i = 1 To UBound(valoresOrdenados) - 1
 
-    'Guardar la posición original de cada etiqueta.
-    'El orden de la colección conserva el orden de las series:
-    'P I queda arriba y R + P debajo cuando comparten el mismo valor.
-    For indice = 1 To cantidad
+        For j = i + 1 To UBound(valoresOrdenados)
 
-        Set etiquetasGrafico(indice) = etiquetas(indice)
+            If valoresOrdenados(i) < valoresOrdenados(j) Then
 
-        centroVerticalOriginal(indice) = _
-            etiquetasGrafico(indice).Top + _
-            etiquetasGrafico(indice).Height / 2
+                valorTemporal = valoresOrdenados(i)
+                valoresOrdenados(i) = valoresOrdenados(j)
+                valoresOrdenados(j) = valorTemporal
 
-        centroHorizontalActual = _
-            etiquetasGrafico(indice).Left + _
-            etiquetasGrafico(indice).Width / 2
-
-        If centroHorizontalActual > centroHorizontal Then
-            centroHorizontal = centroHorizontalActual
-        End If
-
-    Next indice
-
-    'Alinear horizontalmente todas las etiquetas por su centro.
-    centroHorizontal = centroHorizontal + margenHorizontal
-
-    For indice = 1 To cantidad
-
-        etiquetasGrafico(indice).Position = xlLabelPositionCustom
-
-        etiquetasGrafico(indice).Left = _
-            centroHorizontal - etiquetasGrafico(indice).Width / 2
-
-    Next indice
-
-    'Agrupar únicamente las etiquetas que están sobre el mismo punto
-    'o tan cerca que podrían superponerse.
-    For indice = 1 To cantidad
-
-        If Not procesada(indice) Then
-
-            cantidadGrupo = 0
-            centroVerticalGrupo = 0
-            alturaTotalGrupo = 0
-
-            For otroIndice = indice To cantidad
-
-                If Not procesada(otroIndice) Then
-
-                    distanciaVertical = Abs( _
-                        centroVerticalOriginal(otroIndice) - _
-                        centroVerticalOriginal(indice))
-
-                    limiteAgrupacion = _
-                        (etiquetasGrafico(indice).Height + _
-                         etiquetasGrafico(otroIndice).Height) / 2 + _
-                         margenVertical
-
-                    If distanciaVertical <= limiteAgrupacion Then
-
-                        cantidadGrupo = cantidadGrupo + 1
-                        indicesGrupo(cantidadGrupo) = otroIndice
-
-                        centroVerticalGrupo = centroVerticalGrupo + _
-                            centroVerticalOriginal(otroIndice)
-
-                        alturaTotalGrupo = alturaTotalGrupo + _
-                            etiquetasGrafico(otroIndice).Height
-
-                        procesada(otroIndice) = True
-
-                    End If
-
-                End If
-
-            Next otroIndice
-
-            If cantidadGrupo > 0 Then
-
-                centroVerticalGrupo = _
-                    centroVerticalGrupo / cantidadGrupo
-
-                If cantidadGrupo = 1 Then
-
-                    'Una etiqueta aislada queda justo encima de su línea,
-                    'sin alejarse demasiado.
-                    indiceGrupo = indicesGrupo(1)
-
-                    etiquetasGrafico(indiceGrupo).Top = _
-                        Application.Max( _
-                            0, _
-                            centroVerticalGrupo - _
-                            etiquetasGrafico(indiceGrupo).Height - _
-                            margenVertical)
-
-                Else
-
-                    'Cuando varias etiquetas corresponden al mismo valor,
-                    'se reparten alrededor de la línea:
-                    'la primera serie arriba y la siguiente debajo.
-                    alturaTotalGrupo = alturaTotalGrupo + _
-                        margenVertical * (cantidadGrupo - 1)
-
-                    inicioVertical = _
-                        centroVerticalGrupo - alturaTotalGrupo / 2
-
-                    If inicioVertical < 0 Then
-                        inicioVertical = 0
-                    End If
-
-                    For otroIndice = 1 To cantidadGrupo
-
-                        indiceGrupo = indicesGrupo(otroIndice)
-
-                        etiquetasGrafico(indiceGrupo).Top = _
-                            inicioVertical
-
-                        inicioVertical = inicioVertical + _
-                            etiquetasGrafico(indiceGrupo).Height + _
-                            margenVertical
-
-                    Next otroIndice
-
-                End If
+                Set etiquetaTemporal = etiquetasOrdenadas(i)
+                Set etiquetasOrdenadas(i) = etiquetasOrdenadas(j)
+                Set etiquetasOrdenadas(j) = etiquetaTemporal
 
             End If
 
+        Next j
+
+    Next i
+
+    On Error Resume Next
+
+    If etiquetas.Count = 2 Then
+
+        diferencia = Abs(valoresOrdenados(1) - valoresOrdenados(2))
+
+        etiquetasOrdenadas(1).Position = xlLabelPositionCustom
+        etiquetasOrdenadas(2).Position = xlLabelPositionCustom
+
+        If diferencia <= 0.0000001 Then
+
+            'Si son iguales mantiene PI arriba y R+P abajo
+            etiquetas(1).Top = etiquetas(1).Top - separacion
+            etiquetas(2).Top = etiquetas(2).Top + separacion
+
+        Else
+
+            'El mayor siempre arriba.
+            etiquetasOrdenadas(1).Top = _
+                WorksheetFunction.Min( _
+                    etiquetasOrdenadas(1).Top, _
+                    etiquetasOrdenadas(2).Top) - separacion
+
+            etiquetasOrdenadas(2).Top = _
+                etiquetasOrdenadas(1).Top + _
+                etiquetasOrdenadas(1).Height + _
+                separacion
+
         End If
 
-    Next indice
-
-    'Fijar nuevamente el centro horizontal después de moverlas
-    'verticalmente. No se refresca el gráfico después de este punto.
-    DoEvents
-
-    For indice = 1 To cantidad
-
-        etiquetasGrafico(indice).Position = xlLabelPositionCustom
-
-        etiquetasGrafico(indice).Left = _
-            centroHorizontal - etiquetasGrafico(indice).Width / 2
-
-    Next indice
+    End If
 
     On Error GoTo 0
 
@@ -2461,7 +2367,7 @@ Private Function DetectarFilaMeses( _
 
 End Function
 
-Private Function PrimeraColumnaFecha( _
+Private Function primeraColumnaFecha( _
     ByVal ws As Worksheet, _
     ByVal fila As Long) As Long
 
@@ -2474,7 +2380,7 @@ Private Function PrimeraColumnaFecha( _
         columnaInicio, _
         columnaFin
 
-    PrimeraColumnaFecha = columnaInicio
+    primeraColumnaFecha = columnaInicio
 
 End Function
 
@@ -2734,6 +2640,72 @@ SinTIR:
 
 End Function
 
+
+
+Private Function ObtenerInicioGrafico12Meses( _
+    ByVal ws As Worksheet, _
+    ByVal filaFechas As Long, _
+    ByVal columnaFinal As Long) As Long
+
+    Dim primeraColumnaFecha As Long
+    Dim columnaInicial As Long
+    Dim fechaCorte As Date
+    Dim fechaInicialDisponible As Date
+    Dim mesesDisponibles As Long
+
+    'El último mes del gráfico siempre será la fecha de corte.
+    If Not IsDate(ws.Cells(filaFechas, columnaFinal).Value) Then
+        ObtenerInicioGrafico12Meses = COLUMNA_INICIO_KPI
+        Exit Function
+    End If
+
+    fechaCorte = NormalizarMes(ws.Cells(filaFechas, columnaFinal).Value)
+
+    'Busca el primer mes que realmente tiene información.
+    primeraColumnaFecha = COLUMNA_INICIO_KPI
+
+    Do While primeraColumnaFecha <= columnaFinal
+
+        If IsDate(ws.Cells(filaFechas, primeraColumnaFecha).Value) Then
+            Exit Do
+        End If
+
+        primeraColumnaFecha = primeraColumnaFecha + 1
+
+    Loop
+
+    If primeraColumnaFecha > columnaFinal Then
+        ObtenerInicioGrafico12Meses = COLUMNA_INICIO_KPI
+        Exit Function
+    End If
+
+    fechaInicialDisponible = NormalizarMes( _
+                                ws.Cells(filaFechas, primeraColumnaFecha).Value)
+
+    mesesDisponibles = DateDiff("m", fechaInicialDisponible, fechaCorte) + 1
+
+    If mesesDisponibles < 12 Then
+
+        'Cuando todavía no existe un historial de 12 meses:
+        'inicia desde el primer mes con información.
+        columnaInicial = primeraColumnaFecha
+
+    Else
+
+        'Cuando existe suficiente historial:
+        'toma exactamente 12 meses incluyendo la fecha de corte.
+        columnaInicial = columnaFinal - 11
+
+        If columnaInicial < primeraColumnaFecha Then
+            columnaInicial = primeraColumnaFecha
+        End If
+
+    End If
+
+    ObtenerInicioGrafico12Meses = columnaInicial
+
+End Function
+
 Private Function NormalizarMes(ByVal valor As Variant) As Date
 
     If Not IsDate(valor) Then
@@ -2781,5 +2753,3 @@ Private Function LetraColumna(ByVal numeroColumna As Long) As String
     LetraColumna = resultado
 
 End Function
-
-
